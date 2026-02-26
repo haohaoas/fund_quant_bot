@@ -1,0 +1,37 @@
+FROM python:3.10-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# Basic tools for runtime diagnostics and TLS roots
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY backend/requirements-prod.txt /app/backend/requirements-prod.txt
+RUN pip install --no-cache-dir -r /app/backend/requirements-prod.txt
+
+# Copy only backend-related code paths used by backend.main
+COPY backend /app/backend
+COPY run_fund_daily.py /app/run_fund_daily.py
+COPY config.py /app/config.py
+COPY data.py /app/data.py
+COPY strategy.py /app/strategy.py
+COPY sector.py /app/sector.py
+COPY sector_universe.py /app/sector_universe.py
+COPY sector_scorer.py /app/sector_scorer.py
+COPY sector_news.py /app/sector_news.py
+COPY market_scanner.py /app/market_scanner.py
+COPY ai_picker.py /app/ai_picker.py
+COPY ai_advisor.py /app/ai_advisor.py
+COPY news_sentiment.py /app/news_sentiment.py
+COPY data_layer.py /app/data_layer.py
+
+RUN mkdir -p /app/data
+
+EXPOSE 8000
+
+# Single worker is safer with SQLite file lock characteristics.
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

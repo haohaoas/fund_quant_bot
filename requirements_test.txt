@@ -1,0 +1,10 @@
+akshare==1.17.85
+pandas==1.5.3
+requests==2.32.5
+numpy==1.26.4
+openai==1.93.0
+
+# 测试相关
+pytest==7.4.3
+pytest-cov==4.1.0
+pytest-mock==3.12.0

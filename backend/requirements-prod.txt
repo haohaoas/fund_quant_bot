@@ -1,0 +1,11 @@
+# Backend runtime dependencies (production)
+fastapi==0.111.1
+uvicorn[standard]==0.30.6
+
+# Business dependencies used by run_fund_daily and routers
+akshare==1.17.85
+pandas==1.5.3
+numpy==1.26.4
+requests==2.32.5
+openai==1.93.0
+tushare==1.4.24

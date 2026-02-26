@@ -1,0 +1,6 @@
+akshare~=1.17.85
+pandas~=1.5.3
+requests~=2.32.5
+numpy~=1.26.4
+data~=0.4
+openai~=1.93.0
