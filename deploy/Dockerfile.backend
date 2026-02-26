@@ -1,17 +1,31 @@
 FROM python:3.10-slim
 
+ARG DEBIAN_MIRROR=mirrors.aliyun.com
+ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+ARG PIP_TRUSTED_HOST=mirrors.aliyun.com
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
 # Basic tools for runtime diagnostics and TLS roots
-RUN apt-get update \
+RUN set -eux; \
+    if [ -f /etc/apt/sources.list ]; then \
+      sed -i "s|http://deb.debian.org/debian|http://${DEBIAN_MIRROR}/debian|g; s|https://deb.debian.org/debian|http://${DEBIAN_MIRROR}/debian|g; s|http://security.debian.org/debian-security|http://${DEBIAN_MIRROR}/debian-security|g; s|https://security.debian.org/debian-security|http://${DEBIAN_MIRROR}/debian-security|g" /etc/apt/sources.list; \
+    fi; \
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+      sed -i "s|http://deb.debian.org/debian|http://${DEBIAN_MIRROR}/debian|g; s|https://deb.debian.org/debian|http://${DEBIAN_MIRROR}/debian|g; s|http://security.debian.org/debian-security|http://${DEBIAN_MIRROR}/debian-security|g; s|https://security.debian.org/debian-security|http://${DEBIAN_MIRROR}/debian-security|g" /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/requirements-prod.txt /app/backend/requirements-prod.txt
-RUN pip install --no-cache-dir -r /app/backend/requirements-prod.txt
+RUN pip install --no-cache-dir \
+    -i ${PIP_INDEX_URL} \
+    --trusted-host ${PIP_TRUSTED_HOST} \
+    -r /app/backend/requirements-prod.txt
 
 # Copy only backend-related code paths used by backend.main
 COPY backend /app/backend
