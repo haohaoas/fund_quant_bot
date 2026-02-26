@@ -88,7 +88,7 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   static const List<String> _indicators = <String>["今日", "5日", "10日"];
-  static const List<String> _sectorTypes = <String>["行业资金流", "概念资金流", "地域资金流"];
+  static const List<String> _sectorTypes = <String>["行业资金流", "概念资金流"];
   static const List<String> _actions = <String>["BUY", "SELL", "SIP", "REDEEM"];
 
   final NumberFormat _numberFormat = NumberFormat("#,##0.00", "zh_CN");
@@ -288,7 +288,7 @@ class _HomePageState extends State<HomePage> {
       final flow = await widget.apiClient.fetchSectorFlow(
         indicator: _selectedIndicator,
         sectorType: _selectedSectorType,
-        topN: 20,
+        topN: 200,
       );
       if (!mounted) {
         return;
@@ -851,6 +851,76 @@ class _HomePageState extends State<HomePage> {
     return _riseFallStyle(value);
   }
 
+  double? _parsePctText(String text) {
+    final normalized = text.trim().replaceAll("%", "");
+    if (normalized.isEmpty || normalized == "-") {
+      return null;
+    }
+    return double.tryParse(normalized);
+  }
+
+  String _normalizeSectorText(String text) {
+    var value = text.trim();
+    if (value.isEmpty) {
+      return "";
+    }
+    const tokens = <String>["板块", "概念", "行业", "主题", "产业", "赛道", "指数"];
+    for (final token in tokens) {
+      value = value.replaceAll(token, "");
+    }
+    return value.trim();
+  }
+
+  double? _matchSectorPctFromLoadedFlow(String sectorName) {
+    final flow = _sectorFlow;
+    if (flow == null) {
+      return null;
+    }
+    final key = sectorName.trim();
+    if (key.isEmpty || key == "未知板块") {
+      return null;
+    }
+
+    final keyNorm = _normalizeSectorText(key);
+    double? bestValue;
+    var bestScore = 0.0;
+
+    for (final item in flow.items) {
+      final candidate = item.name.trim();
+      if (candidate.isEmpty) {
+        continue;
+      }
+      final candidateNorm = _normalizeSectorText(candidate);
+      final pct = _parsePctText(item.changePct);
+      if (pct == null) {
+        continue;
+      }
+
+      if (candidate == key ||
+          candidateNorm == keyNorm ||
+          candidate.contains(key) ||
+          key.contains(candidate) ||
+          (keyNorm.isNotEmpty &&
+              candidateNorm.isNotEmpty &&
+              (candidateNorm.contains(keyNorm) ||
+                  keyNorm.contains(candidateNorm)))) {
+        return pct;
+      }
+
+      final prefixHit = keyNorm.isNotEmpty &&
+          candidateNorm.isNotEmpty &&
+          keyNorm.length >= 2 &&
+          candidateNorm.length >= 2 &&
+          keyNorm.substring(0, 2) == candidateNorm.substring(0, 2);
+      final score = prefixHit ? 0.6 : 0.0;
+      if (score > bestScore) {
+        bestScore = score;
+        bestValue = pct;
+      }
+    }
+    return bestValue;
+  }
+
   List<_WatchlistDisplayItem> _buildWatchlistDisplayItems() {
     final merged = <String, _WatchlistDisplayItem>{};
 
@@ -865,7 +935,8 @@ class _HomePageState extends State<HomePage> {
         latestPrice: item.latestPrice,
         latestPct: item.latestPct,
         sectorName: item.sectorName.trim(),
-        sectorPct: item.sectorPct,
+        sectorPct:
+            item.sectorPct ?? _matchSectorPctFromLoadedFlow(item.sectorName),
         isHolding: false,
         canRemove: true,
       );
@@ -886,7 +957,7 @@ class _HomePageState extends State<HomePage> {
           latestPrice: position.latestNav,
           latestPct: position.dailyChangePct,
           sectorName: position.sector.trim(),
-          sectorPct: null,
+          sectorPct: _matchSectorPctFromLoadedFlow(position.sector),
           isHolding: true,
           canRemove: false,
         );
@@ -901,7 +972,10 @@ class _HomePageState extends State<HomePage> {
         sectorName: current.sectorName.isEmpty
             ? position.sector.trim()
             : current.sectorName,
-        sectorPct: current.sectorPct,
+        sectorPct: current.sectorPct ??
+            _matchSectorPctFromLoadedFlow(
+              current.sectorName.isEmpty ? position.sector : current.sectorName,
+            ),
         isHolding: true,
         canRemove: current.canRemove,
       );
