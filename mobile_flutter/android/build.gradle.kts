@@ -1,7 +1,10 @@
 allprojects {
     repositories {
+        // Prefer Aliyun mirrors in CN network to improve dependency download reliability.
+        maven(url = "https://maven.aliyun.com/repository/public")
+        maven(url = "https://maven.aliyun.com/repository/google")
+        maven(url = "https://maven.aliyun.com/repository/gradle-plugin")
         google()
-        mavenCentral()
     }
 }
 
