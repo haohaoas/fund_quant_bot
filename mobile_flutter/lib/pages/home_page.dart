@@ -1906,25 +1906,39 @@ class _HomePageState extends State<HomePage> {
                           ),
                         ),
                       ),
-                      SizedBox(width: 40),
                     ],
                   ),
                 ),
                 for (final item in displayItems)
                   InkWell(
                     onTap: () {
+                      final analysisName =
+                          item.name.trim().isEmpty ? item.code : item.name;
                       Navigator.of(context).push(
                         MaterialPageRoute(
                           builder: (_) => _FundAnalysisPage(
                             apiClient: widget.apiClient,
                             code: item.code,
-                            name: item.displayName,
+                            name: analysisName,
                           ),
                         ),
                       );
                     },
+                    onLongPress: () {
+                      if (!item.canRemove) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text("持有基金默认并入自选，不能在这里删除")),
+                        );
+                        return;
+                      }
+                      final src = _findWatchlistSource(item.code);
+                      if (src == null) {
+                        return;
+                      }
+                      unawaited(_onDeleteWatchlistPressed(src));
+                    },
                     child: Container(
-                      padding: const EdgeInsets.fromLTRB(12, 9, 8, 9),
+                      padding: const EdgeInsets.fromLTRB(12, 9, 12, 9),
                       decoration: const BoxDecoration(
                         border: Border(
                             bottom: BorderSide(color: Color(0xFFF0F2F7))),
@@ -2023,24 +2037,6 @@ class _HomePageState extends State<HomePage> {
                                   ),
                               ],
                             ),
-                          ),
-                          SizedBox(
-                            width: 40,
-                            child: item.canRemove
-                                ? IconButton(
-                                    tooltip: "移除",
-                                    onPressed: () {
-                                      final src =
-                                          _findWatchlistSource(item.code);
-                                      if (src == null) {
-                                        return;
-                                      }
-                                      unawaited(_onDeleteWatchlistPressed(src));
-                                    },
-                                    icon: const Icon(
-                                        Icons.delete_outline_rounded),
-                                  )
-                                : const SizedBox.shrink(),
                           ),
                         ],
                       ),
@@ -2312,8 +2308,12 @@ class _FundAnalysisPageState extends State<_FundAnalysisPage> {
       if (!mounted) {
         return;
       }
+      String message = error.toString();
+      if (error is ApiException && error.body.isNotEmpty) {
+        message = "${error.message}\n${error.body}";
+      }
       setState(() {
-        _error = error.toString();
+        _error = message;
       });
     } finally {
       if (mounted) {

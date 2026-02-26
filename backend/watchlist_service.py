@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import os
 from typing import Any, Dict, List, Optional
 
 from backend.db import get_conn, init_db
@@ -40,6 +41,22 @@ def _item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
         "created_at": str(row["created_at"] or ""),
         "updated_at": str(row["updated_at"] or ""),
     }
+
+
+def _to_float_or_none(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except Exception:
+        return None
 
 
 def list_watchlist(user_id: int) -> List[Dict[str, Any]]:
@@ -213,12 +230,27 @@ def analyze_fund(code: str, name: str = "") -> Dict[str, Any]:
     display_name = str(name or "").strip()
 
     # Lazy imports to avoid heavy init at module import time.
-    from config import WATCH_FUNDS
-    from data import get_fund_latest_price
-    from backend.portfolio_service import fetch_fund_gz
-    from strategy import generate_today_signal
-    from sector import get_sector_by_fund, get_sector_sentiment
-    from ai_advisor import ask_deepseek_fund_decision
+    try:
+        from config import WATCH_FUNDS
+    except Exception:
+        WATCH_FUNDS = {}
+    try:
+        from backend.portfolio_service import fetch_fund_gz
+    except Exception:
+        fetch_fund_gz = None
+    try:
+        from strategy import generate_today_signal
+    except Exception:
+        generate_today_signal = None
+    try:
+        from sector import get_sector_by_fund, get_sector_sentiment
+    except Exception:
+        get_sector_by_fund = None
+        get_sector_sentiment = None
+    try:
+        from ai_advisor import ask_deepseek_fund_decision
+    except Exception:
+        ask_deepseek_fund_decision = None
 
     if not display_name:
         cfg = WATCH_FUNDS.get(c, {})
@@ -229,9 +261,12 @@ def analyze_fund(code: str, name: str = "") -> Dict[str, Any]:
     price = None
     pct = None
 
-    try:
-        gz = fetch_fund_gz(c) or {}
-    except Exception:
+    if callable(fetch_fund_gz):
+        try:
+            gz = fetch_fund_gz(c) or {}
+        except Exception:
+            gz = {}
+    else:
         gz = {}
 
     if gz.get("ok"):
@@ -246,12 +281,21 @@ def analyze_fund(code: str, name: str = "") -> Dict[str, Any]:
         price = latest.get("price")
         pct = latest.get("pct")
     else:
-        latest = get_fund_latest_price(c) or {}
+        # Keep analyze endpoint responsive: avoid heavy history fallback path here.
+        latest = {
+            "price": None,
+            "pct": None,
+            "time": "",
+            "source": "unavailable",
+        }
         price = latest.get("price")
         pct = latest.get("pct")
 
+    price_f = _to_float_or_none(price)
+    pct_f = _to_float_or_none(pct)
+
     signal: Dict[str, Any]
-    if price is None:
+    if price_f is None:
         signal = {
             "action": "HOLD",
             "position_hint": "KEEP",
@@ -262,43 +306,102 @@ def analyze_fund(code: str, name: str = "") -> Dict[str, Any]:
             "base_price": None,
         }
     else:
-        try:
-            signal = generate_today_signal(c, float(price))
-        except Exception as e:
+        if callable(generate_today_signal):
+            try:
+                signal = generate_today_signal(c, price_f)
+            except Exception as e:
+                signal = {
+                    "action": "HOLD",
+                    "position_hint": "KEEP",
+                    "hit_level": None,
+                    "price_vs_base_pct": None,
+                    "reason": f"策略计算失败: {type(e).__name__}",
+                    "grids": [],
+                    "base_price": None,
+                }
+        else:
             signal = {
                 "action": "HOLD",
                 "position_hint": "KEEP",
                 "hit_level": None,
                 "price_vs_base_pct": None,
-                "reason": f"策略计算失败: {type(e).__name__}",
+                "reason": "策略模块未就绪，使用默认观望建议",
                 "grids": [],
                 "base_price": None,
             }
 
-    sector_name = get_sector_by_fund(c)
-    sector_info = get_sector_sentiment(sector_name)
+    if callable(get_sector_by_fund):
+        try:
+            sector_name = str(get_sector_by_fund(c) or "").strip()
+        except Exception:
+            sector_name = ""
+    else:
+        sector_name = ""
 
-    ai = ask_deepseek_fund_decision(
-        fund_name=display_name or c,
-        code=c,
-        latest={
-            "price": price,
-            "pct": pct,
-            "time": latest.get("time"),
-            "source": latest.get("source"),
-        },
-        quant_signal=signal,
-        sector_info=sector_info,
-        fund_profile=None,
+    sector_info: Dict[str, Any] = {
+        "sector": sector_name or "未知板块",
+        "score": 50,
+        "level": "中性",
+        "comment": "暂未获取到板块情绪数据。",
+    }
+    sector_live_enabled = (
+        os.getenv("WATCHLIST_ANALYZE_SECTOR_LIVE", "0").strip() == "1"
     )
+    if sector_live_enabled and callable(get_sector_sentiment):
+        try:
+            raw_sector_info = get_sector_sentiment(sector_name) or {}
+            if isinstance(raw_sector_info, dict):
+                sector_info = {
+                    "sector": str(
+                        raw_sector_info.get("sector") or sector_name or "未知板块"
+                    ),
+                    "score": _to_float_or_none(raw_sector_info.get("score")) or 50,
+                    "level": str(raw_sector_info.get("level") or "中性"),
+                    "comment": str(raw_sector_info.get("comment") or ""),
+                }
+        except Exception:
+            pass
+
+    ai_enabled = os.getenv("WATCHLIST_ANALYZE_USE_AI", "0").strip() == "1"
+    ai: Dict[str, Any] = {
+        "action": str(signal.get("action") or "HOLD"),
+        "reason": "AI 分析未开启，已采用策略信号。",
+    }
+    if ai_enabled and callable(ask_deepseek_fund_decision):
+        try:
+            ai_resp = ask_deepseek_fund_decision(
+                fund_name=display_name or c,
+                code=c,
+                latest={
+                    "price": price_f,
+                    "pct": pct_f,
+                    "time": latest.get("time"),
+                    "source": latest.get("source"),
+                },
+                quant_signal=signal,
+                sector_info=sector_info,
+                fund_profile=None,
+            )
+            if isinstance(ai_resp, dict):
+                ai = {
+                    "action": str(
+                        ai_resp.get("action") or signal.get("action") or "HOLD"
+                    ),
+                    "reason": str(ai_resp.get("reason") or ""),
+                }
+        except Exception:
+            ai = {
+                "action": str(signal.get("action") or "HOLD"),
+                "reason": "AI 分析暂不可用，已采用策略信号。",
+            }
 
     return {
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "code": c,
         "name": display_name or c,
         "latest": {
-            "price": float(price) if price is not None else None,
-            "pct": float(pct) if pct is not None else None,
+            "price": price_f,
+            "pct": pct_f,
             "time": str(latest.get("time") or ""),
             "source": str(latest.get("source") or ""),
         },
@@ -313,7 +416,7 @@ def analyze_fund(code: str, name: str = "") -> Dict[str, Any]:
         },
         "sector": {
             "name": str(sector_info.get("sector") or sector_name or "未知板块"),
-            "score": float(sector_info.get("score") or 50),
+            "score": _to_float_or_none(sector_info.get("score")) or 50,
             "level": str(sector_info.get("level") or "中性"),
             "comment": str(sector_info.get("comment") or ""),
         },

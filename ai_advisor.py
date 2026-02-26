@@ -45,6 +45,7 @@ from openai import OpenAI
 _DEEPSEEK_API_KEY = "sk-033b834656f24ee88f08254b6b66809f"
 _DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 _MODEL_NAME = os.getenv("DEEPSEEK_MODEL", "deepseek-reasoner")
+_AI_TIMEOUT_SEC = float(os.getenv("DEEPSEEK_TIMEOUT_SEC", "4"))
 
 if not _DEEPSEEK_API_KEY:
     print("[ai] 警告：未设置 DEEPSEEK_API_KEY / OPENAI_API_KEY，AI 决策将使用量化策略默认结果。")
@@ -270,6 +271,7 @@ def ask_deepseek_fund_decision(
             ],
             response_format={"type": "json_object"},
             temperature=0.3,
+            timeout=_AI_TIMEOUT_SEC,
         )
         content = resp.choices[0].message.content
         data = json.loads(content)
