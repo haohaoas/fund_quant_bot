@@ -135,7 +135,7 @@ def _fund_to_sector(code: str) -> str:
     Resolve fund -> sector.
     Priority:
     1) ps.get_sector_override (if implemented)
-    2) backend.sector.FUND_TO_SECTOR (if exists)
+    2) sector.get_sector_by_fund (持仓加权/静态映射)
     3) '其他'
     """
     code = (code or "").strip()
@@ -152,9 +152,10 @@ def _fund_to_sector(code: str) -> str:
             pass
 
     try:
-        from backend.sector import FUND_TO_SECTOR  # type: ignore
-        s = (FUND_TO_SECTOR.get(code) or "").strip()
-        if s:
+        from sector import get_sector_by_fund  # type: ignore
+
+        s = (get_sector_by_fund(code) or "").strip()
+        if s and s != "未知板块":
             return s
     except Exception:
         pass
@@ -166,7 +167,7 @@ def _reverse_sector_map() -> Dict[str, List[str]]:
     """Reverse mapping: sector -> [fund_codes]."""
     mp: Dict[str, List[str]] = {}
     try:
-        from backend.sector import FUND_TO_SECTOR  # type: ignore
+        from sector import FUND_TO_SECTOR  # type: ignore
         for c, s in (FUND_TO_SECTOR or {}).items():
             if not s:
                 continue
@@ -535,7 +536,7 @@ def strategy_plan(payload: StrategyPlanIn):
                 "title": "部分强势板块未能生成买入建议：缺少板块-基金映射",
                 "detail": {
                     "sectors": skipped,
-                    "hint": "可在 backend/sector.py 的 FUND_TO_SECTOR 添加映射，或用 sector_override 覆盖。",
+                    "hint": "可在 sector.py 的 FUND_TO_SECTOR 添加映射，或用 sector_override 覆盖。",
                 },
             }
         )

@@ -198,6 +198,16 @@ def _get_sector_label(code: str, name: str = "") -> str:
     if ov:
         return ov
 
+    # 优先尝试“前十大持仓加权”推导板块。
+    try:
+        from backend.fund_sector_service import infer_fund_sector
+
+        inferred_by_holdings = str(infer_fund_sector(code) or "").strip()
+        if inferred_by_holdings:
+            return inferred_by_holdings
+    except Exception:
+        pass
+
     # 没覆盖才走你原来的逻辑：静态映射 / 名称推断 / 默认未知
     try:
         s = get_sector_by_fund(code)

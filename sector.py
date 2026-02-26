@@ -29,7 +29,22 @@ FUND_TO_SECTOR: Dict[str, str] = {
 
 
 def get_sector_by_fund(code: str) -> str:
-    return FUND_TO_SECTOR.get(str(code).strip(), "未知板块")
+    c = str(code or "").strip()
+    if not c:
+        return "未知板块"
+
+    # First priority: infer by top holdings (stock-sector weighted).
+    try:
+        from backend.fund_sector_service import infer_fund_sector
+
+        inferred = str(infer_fund_sector(c) or "").strip()
+        if inferred:
+            return inferred
+    except Exception:
+        pass
+
+    # Fallback: static mapping.
+    return FUND_TO_SECTOR.get(c, "未知板块")
 
 
 # === 行业资金流缓存（低频） ===

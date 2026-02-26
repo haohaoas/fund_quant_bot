@@ -233,6 +233,36 @@ def init_db() -> None:
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_watchlist_user ON watchlist_funds(user_id);"
         )
+        # 个股 -> 板块映射（可由持仓推导流程自动刷新）
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS stock_sector_map (
+                stock_code TEXT PRIMARY KEY,
+                sector TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+            );
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_stock_sector_updated ON stock_sector_map(updated_at);"
+        )
+        # 基金板块画像（由前十大持仓按占比加权）
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS fund_sector_profile (
+                fund_code TEXT PRIMARY KEY,
+                dominant_sector TEXT NOT NULL DEFAULT '',
+                sector_weights_json TEXT NOT NULL DEFAULT '{}',
+                holdings_json TEXT NOT NULL DEFAULT '[]',
+                source TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+            );
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_fund_sector_updated ON fund_sector_profile(updated_at);"
+        )
         # 兼容旧库：先确保 legacy account 有默认行
         cur.execute(
             """
