@@ -3,6 +3,8 @@ class AppConfig {
 
   static const String apiBaseUrl = String.fromEnvironment(
     "API_BASE_URL",
-    defaultValue: "http://10.0.2.2:8000",
+    // Default to online backend so release builds still work
+    // even when --dart-define is omitted.
+    defaultValue: "http://47.112.109.7:8000",
   );
 }

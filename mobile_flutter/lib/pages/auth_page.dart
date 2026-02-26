@@ -1,4 +1,6 @@
 import "dart:convert";
+import "dart:io";
+import "dart:async";
 
 import "package:flutter/material.dart";
 
@@ -110,7 +112,13 @@ class _AuthPageState extends State<AuthPage> {
       }
       return "请求失败 (${error.statusCode})";
     }
-    return "操作失败，请稍后重试";
+    if (error is TimeoutException) {
+      return "请求超时，请稍后重试（${widget.apiClient.baseUrl}）";
+    }
+    if (error is SocketException) {
+      return "网络连接失败，请检查服务器是否可访问（${widget.apiClient.baseUrl}）";
+    }
+    return "操作失败：$error";
   }
 
   @override
