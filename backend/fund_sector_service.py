@@ -527,12 +527,18 @@ def resolve_and_cache_fund_sector(
         return ""
 
     cached = get_cached_fund_sector(c)
-    if (
-        cached
-        and not force_refresh
-        and _is_fresh(str(cached.get("updated_at") or ""), _FUND_SECTOR_CACHE_TTL_SECONDS)
-    ):
-        return str(cached.get("sector") or "").strip()
+    if cached and not force_refresh:
+        cached_sector = str(cached.get("sector") or "").strip()
+        # "未知板块" is treated as unresolved and should be retried.
+        if (
+            cached_sector
+            and cached_sector != "未知板块"
+            and _is_fresh(
+                str(cached.get("updated_at") or ""),
+                _FUND_SECTOR_CACHE_TTL_SECONDS,
+            )
+        ):
+            return cached_sector
 
     # Step 1: weighted holdings.
     sector = infer_fund_sector(c, refresh=force_refresh)

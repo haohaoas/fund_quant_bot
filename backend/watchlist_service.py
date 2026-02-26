@@ -172,12 +172,19 @@ def list_watchlist(user_id: int) -> List[Dict[str, Any]]:
             try:
                 cached = get_cached_fund_sector(code) or {}
                 sector_name = str(cached.get("sector") or "").strip()
+                if sector_name == "未知板块":
+                    sector_name = ""
             except Exception:
                 sector_name = ""
         if (not sector_name) and callable(resolve_and_cache_fund_sector):
             try:
                 sector_name = str(
-                    resolve_and_cache_fund_sector(code, fund_name=item["name"]) or ""
+                    resolve_and_cache_fund_sector(
+                        code,
+                        fund_name=item["name"],
+                        force_refresh=True,
+                    )
+                    or ""
                 ).strip()
             except Exception:
                 sector_name = ""
