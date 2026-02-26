@@ -97,10 +97,21 @@ def _merge_sector_pct_row(
     n = str(name or "").strip()
     if not n:
         return
-    fallback[n] = pct
+
+    old = fallback.get(n)
+    # Never let an empty pct overwrite an existing numeric pct.
+    if pct is None and old is not None:
+        pass
+    else:
+        fallback[n] = pct
+
     normalized = _norm_sector_text(n)
-    if normalized and normalized not in fallback:
-        fallback[normalized] = pct
+    if normalized:
+        old_norm = fallback.get(normalized)
+        if old_norm is None and normalized not in fallback:
+            fallback[normalized] = pct
+        elif pct is not None:
+            fallback[normalized] = pct
 
 
 def _build_sector_pct_fallback_map_from_akshare_full() -> Dict[str, Optional[float]]:
@@ -202,6 +213,9 @@ def _build_sector_pct_fallback_map() -> Dict[str, Optional[float]]:
     full_map = _build_sector_pct_fallback_map_from_akshare_full()
     for k, v in full_map.items():
         if k not in fallback:
+            fallback[k] = v
+            continue
+        if fallback.get(k) is None and v is not None:
             fallback[k] = v
 
     _SECTOR_PCT_FALLBACK_CACHE["ts"] = now
