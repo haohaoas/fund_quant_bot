@@ -47,6 +47,7 @@ class PortfolioPosition {
     required this.code,
     required this.name,
     required this.sector,
+    required this.sectorPct,
     required this.shares,
     required this.cost,
     required this.latestNav,
@@ -60,6 +61,7 @@ class PortfolioPosition {
   final String code;
   final String name;
   final String sector;
+  final double? sectorPct;
   final double shares;
   final double cost;
   final double? latestNav;
@@ -84,6 +86,7 @@ class PortfolioPosition {
       code: _toStringValue(json["code"], "-"),
       name: _toStringValue(json["name"], _toStringValue(json["code"], "-")),
       sector: _toStringValue(json["sector"]),
+      sectorPct: parseNullableDouble(json["sector_pct"]),
       shares: _toDouble(json["shares"]),
       cost: _toDouble(json["cost"]),
       latestNav: parseNullableDouble(json["latest_nav"]),

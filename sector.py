@@ -174,7 +174,18 @@ def get_sector_sentiment(sector: str) -> Dict[str, Any]:
     sector = str(sector).strip()
 
     df = _get_sector_flow_df()
-    hit = _lookup_sector_flow(df, sector)
+    alias_map = {
+        "AI应用": ["人工智能", "AIGC", "ChatGPT", "算力"],
+        "影视院线": ["影视传媒", "文化传媒"],
+    }
+    candidates = [sector]
+    candidates.extend(alias_map.get(sector, []))
+
+    hit = None
+    for cand in candidates:
+        hit = _lookup_sector_flow(df, cand)
+        if hit:
+            break
 
     flow_inflow = None
     flow_pct = None

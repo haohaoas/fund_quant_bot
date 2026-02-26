@@ -957,7 +957,8 @@ class _HomePageState extends State<HomePage> {
           latestPrice: position.latestNav,
           latestPct: position.dailyChangePct,
           sectorName: position.sector.trim(),
-          sectorPct: _matchSectorPctFromLoadedFlow(position.sector),
+          sectorPct: position.sectorPct ??
+              _matchSectorPctFromLoadedFlow(position.sector),
           isHolding: true,
           canRemove: false,
         );
@@ -973,6 +974,7 @@ class _HomePageState extends State<HomePage> {
             ? position.sector.trim()
             : current.sectorName,
         sectorPct: current.sectorPct ??
+            position.sectorPct ??
             _matchSectorPctFromLoadedFlow(
               current.sectorName.isEmpty ? position.sector : current.sectorName,
             ),

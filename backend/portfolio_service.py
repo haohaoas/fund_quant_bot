@@ -256,11 +256,22 @@ def enrich_position(pos: Dict[str, Any]) -> Dict[str, Any]:
 
     daily_profit = (shares * (nav - prev_nav)) if (nav is not None and prev_nav is not None) else None
 
+    sector_label = _get_sector_label(code, name)
+    sector_pct = None
+    try:
+        from sector import get_sector_sentiment
+
+        senti = get_sector_sentiment(sector_label) if sector_label else {}
+        sector_pct = _safe_float((senti or {}).get("flow_pct"))
+    except Exception:
+        sector_pct = None
+
     out = dict(pos)
     out.update(
         {
             "name": name,
-            "sector": _get_sector_label(code, name),
+            "sector": sector_label,
+            "sector_pct": _round_or_none(sector_pct, 2),
             "latest_nav": _round_or_none(nav, 6),
             "prev_nav": _round_or_none(prev_nav, 6),
             "daily_change_pct": _round_or_none(daily_change_pct, 2),
