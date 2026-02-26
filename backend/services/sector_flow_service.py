@@ -523,8 +523,8 @@ def _normalize_provider(provider: str) -> str:
     return p
 
 
-def _cache_key(provider: str, indicator: str, sector_type: str) -> str:
-    return f"{provider}::{indicator}::{sector_type}"
+def _cache_key(provider: str, indicator: str, sector_type: str, top_n: int) -> str:
+    return f"{provider}::{indicator}::{sector_type}::{int(top_n)}"
 
 
 def sector_fund_flow_core(
@@ -543,7 +543,7 @@ def sector_fund_flow_core(
     settings = get_settings()
     p = _normalize_provider(provider or settings.fund_board_provider)
 
-    ck = _cache_key(p, indicator, sector_type)
+    ck = _cache_key(p, indicator, sector_type, int(top_n))
 
     with _CACHE_LOCK:
         cached = _SECTOR_CACHE.get(ck)
