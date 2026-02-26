@@ -59,6 +59,80 @@ def _to_float_or_none(value: Any) -> Optional[float]:
         return None
 
 
+def _norm_sector_text(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    for token in ("板块", "概念", "行业", "主题", "产业", "赛道", "指数"):
+        text = text.replace(token, "")
+    return text.strip()
+
+
+def _build_sector_pct_fallback_map() -> Dict[str, Optional[float]]:
+    """
+    Pull one snapshot of industry/concept flow and build a name->pct map.
+    This is used as fallback when `get_sector_sentiment` cannot resolve flow_pct.
+    """
+    try:
+        from backend.services.sector_flow_service import sector_fund_flow_core
+    except Exception:
+        return {}
+
+    fallback: Dict[str, Optional[float]] = {}
+    for sector_type in ("行业资金流", "概念资金流"):
+        try:
+            res = sector_fund_flow_core(
+                indicator="今日",
+                sector_type=sector_type,
+                top_n=300,
+                provider="auto",
+            ) or {}
+        except Exception:
+            continue
+
+        if not bool(res.get("ok", False)):
+            continue
+
+        for row in (res.get("items") or []):
+            name = str(row.get("name") or "").strip()
+            if not name:
+                continue
+            pct = _to_float_or_none(row.get("change_pct"))
+            fallback[name] = pct
+            normalized = _norm_sector_text(name)
+            if normalized and normalized not in fallback:
+                fallback[normalized] = pct
+    return fallback
+
+
+def _match_sector_pct_from_fallback(
+    sector_name: str,
+    fallback_map: Dict[str, Optional[float]],
+) -> Optional[float]:
+    key = str(sector_name or "").strip()
+    if not key:
+        return None
+
+    # Exact match.
+    if key in fallback_map:
+        return fallback_map.get(key)
+
+    norm = _norm_sector_text(key)
+    if norm in fallback_map:
+        return fallback_map.get(norm)
+
+    # Fuzzy contains match for naming variants.
+    for cand_name, cand_pct in fallback_map.items():
+        if not cand_name:
+            continue
+        if key in cand_name or cand_name in key:
+            return cand_pct
+        cand_norm = _norm_sector_text(cand_name)
+        if norm and cand_norm and (norm in cand_norm or cand_norm in norm):
+            return cand_pct
+    return None
+
+
 def list_watchlist(user_id: int) -> List[Dict[str, Any]]:
     uid = _norm_user_id(user_id)
     with get_conn() as conn:
@@ -102,6 +176,8 @@ def list_watchlist(user_id: int) -> List[Dict[str, Any]]:
         from backend.portfolio_service import fetch_fund_gz
     except Exception:
         fetch_fund_gz = None
+
+    sector_pct_fallback_map = _build_sector_pct_fallback_map()
 
     for item in items:
         code = str(item["code"] or "").strip()
@@ -205,6 +281,12 @@ def list_watchlist(user_id: int) -> List[Dict[str, Any]]:
                 item["sector_pct"] = float(pct) if pct is not None else None
             except Exception:
                 item["sector_pct"] = None
+
+        if item["sector_pct"] is None and item["sector_name"] and item["sector_name"] != "未知板块":
+            item["sector_pct"] = _match_sector_pct_from_fallback(
+                item["sector_name"],
+                sector_pct_fallback_map,
+            )
 
     return items
 
