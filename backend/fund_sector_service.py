@@ -58,7 +58,8 @@ def _safe_float(x: Any, default: float = 0.0) -> float:
 
 
 def _pick_col(df: Any, keys: List[str]) -> Optional[str]:
-    cols = list(getattr(df, "columns", []) or [])
+    cols_obj = getattr(df, "columns", None)
+    cols = list(cols_obj) if cols_obj is not None else []
     for c in cols:
         text = str(c)
         for k in keys:
@@ -315,7 +316,8 @@ def _fetch_stock_sector_from_ak(stock_code: str) -> Tuple[str, str]:
     key_col = _pick_col(df, ["item", "项目", "字段"])
     val_col = _pick_col(df, ["value", "值", "内容"])
     if not key_col or not val_col:
-        cols = list(getattr(df, "columns", []) or [])
+        cols_obj = getattr(df, "columns", None)
+        cols = list(cols_obj) if cols_obj is not None else []
         if len(cols) >= 2:
             key_col, val_col = str(cols[0]), str(cols[1])
     if not key_col or not val_col:
