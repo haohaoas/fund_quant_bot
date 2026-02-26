@@ -53,6 +53,8 @@ def _to_float_or_none(value: Any) -> Optional[float]:
     text = str(value).strip()
     if not text:
         return None
+    if text.endswith("%"):
+        text = text[:-1].strip()
     try:
         return float(text)
     except Exception:
@@ -84,7 +86,7 @@ def _build_sector_pct_fallback_map() -> Dict[str, Optional[float]]:
             res = sector_fund_flow_core(
                 indicator="今日",
                 sector_type=sector_type,
-                top_n=300,
+                top_n=200,
                 provider="auto",
             ) or {}
         except Exception:
@@ -97,7 +99,11 @@ def _build_sector_pct_fallback_map() -> Dict[str, Optional[float]]:
             name = str(row.get("name") or "").strip()
             if not name:
                 continue
-            pct = _to_float_or_none(row.get("change_pct"))
+            pct = _to_float_or_none(
+                row.get("chg_pct")
+                if row.get("chg_pct") is not None
+                else row.get("change_pct")
+            )
             fallback[name] = pct
             normalized = _norm_sector_text(name)
             if normalized and normalized not in fallback:
