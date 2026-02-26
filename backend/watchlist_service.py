@@ -167,6 +167,56 @@ def _build_sector_pct_fallback_map_from_akshare_full() -> Dict[str, Optional[flo
     return fallback
 
 
+def _build_sector_pct_fallback_map_from_board_names() -> Dict[str, Optional[float]]:
+    """
+    Fetch full board quote lists (industry/concept) and build name->pct map.
+    This is more complete than flow rank lists for sector_pct display.
+    """
+    try:
+        import akshare as ak  # type: ignore
+    except Exception:
+        return {}
+
+    try:
+        from backend.services.sector_flow_service import akshare_no_proxy
+    except Exception:
+        akshare_no_proxy = None
+
+    fallback: Dict[str, Optional[float]] = {}
+
+    def load_df(fn_name: str):
+        fn = getattr(ak, fn_name, None)
+        if not callable(fn):
+            return None
+        try:
+            if callable(akshare_no_proxy):
+                with akshare_no_proxy():
+                    return fn()
+            return fn()
+        except Exception:
+            return None
+
+    for fn_name in ("stock_board_industry_name_em", "stock_board_concept_name_em"):
+        df = load_df(fn_name)
+        if df is None:
+            continue
+        try:
+            if len(df) == 0:
+                continue
+        except Exception:
+            continue
+
+        for _, row in df.iterrows():
+            name = _pick_first_from_row(row, ["板块名称", "名称", "行业", "概念"])
+            if name is None:
+                continue
+            pct_raw = _pick_first_from_row(row, ["涨跌幅", "涨跌"])
+            pct = _to_float_or_none(pct_raw)
+            _merge_sector_pct_row(fallback, str(name), pct)
+
+    return fallback
+
+
 def _build_sector_pct_fallback_map() -> Dict[str, Optional[float]]:
     """
     Pull one snapshot of industry/concept flow and build a name->pct map.
@@ -184,6 +234,11 @@ def _build_sector_pct_fallback_map() -> Dict[str, Optional[float]]:
         return {}
 
     fallback: Dict[str, Optional[float]] = {}
+
+    # Priority 1: full board quote lists (usually most complete for pct display).
+    board_name_map = _build_sector_pct_fallback_map_from_board_names()
+    for k, v in board_name_map.items():
+        _merge_sector_pct_row(fallback, k, v)
     for sector_type in ("行业资金流", "概念资金流"):
         try:
             res = sector_fund_flow_core(
@@ -209,7 +264,7 @@ def _build_sector_pct_fallback_map() -> Dict[str, Optional[float]]:
             )
             _merge_sector_pct_row(fallback, name, pct)
 
-    # Merge full list from akshare THS as stronger fallback.
+    # Merge full list from THS fund-flow tables as additional fallback.
     full_map = _build_sector_pct_fallback_map_from_akshare_full()
     for k, v in full_map.items():
         if k not in fallback:
