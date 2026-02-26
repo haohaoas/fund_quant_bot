@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from datetime import datetime
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 from backend.db import get_conn, init_db
 
 init_db()
+
+_SECTOR_PCT_FALLBACK_CACHE: Dict[str, Any] = {"ts": 0.0, "data": {}}
+_SECTOR_PCT_FALLBACK_TTL_SECONDS = 120
 
 
 def _norm_user_id(user_id: int) -> int:
@@ -70,11 +74,99 @@ def _norm_sector_text(value: str) -> str:
     return text.strip()
 
 
+def _pick_first_from_row(row: Any, keys: List[str]) -> Any:
+    for k in keys:
+        try:
+            v = row.get(k)  # pandas.Series supports get
+        except Exception:
+            v = None
+        if v is None:
+            continue
+        s = str(v).strip()
+        if not s or s in {"--", "-", "nan", "None"}:
+            continue
+        return v
+    return None
+
+
+def _merge_sector_pct_row(
+    fallback: Dict[str, Optional[float]],
+    name: str,
+    pct: Optional[float],
+) -> None:
+    n = str(name or "").strip()
+    if not n:
+        return
+    fallback[n] = pct
+    normalized = _norm_sector_text(n)
+    if normalized and normalized not in fallback:
+        fallback[normalized] = pct
+
+
+def _build_sector_pct_fallback_map_from_akshare_full() -> Dict[str, Optional[float]]:
+    """
+    Directly fetch full industry/concept flow list from THS (即时),
+    so watchlist sectors are not limited by top_n truncation.
+    """
+    try:
+        import akshare as ak  # type: ignore
+    except Exception:
+        return {}
+
+    try:
+        from backend.services.sector_flow_service import akshare_no_proxy
+    except Exception:
+        akshare_no_proxy = None
+
+    fallback: Dict[str, Optional[float]] = {}
+
+    def load_df(kind: str):
+        if kind == "industry":
+            fn = getattr(ak, "stock_fund_flow_industry", None)
+        else:
+            fn = getattr(ak, "stock_fund_flow_concept", None)
+        if not callable(fn):
+            return None
+        try:
+            if callable(akshare_no_proxy):
+                with akshare_no_proxy():
+                    return fn(symbol="即时")
+            return fn(symbol="即时")
+        except Exception:
+            return None
+
+    for kind in ("industry", "concept"):
+        df = load_df(kind)
+        if df is None:
+            continue
+        try:
+            if len(df) == 0:
+                continue
+        except Exception:
+            continue
+
+        for _, row in df.iterrows():
+            name = _pick_first_from_row(row, ["行业", "概念", "板块名称", "名称"])
+            if name is None:
+                continue
+            chg = _pick_first_from_row(row, ["行业-涨跌幅", "阶段涨跌幅", "涨跌幅", "涨跌"])
+            pct = _to_float_or_none(chg)
+            _merge_sector_pct_row(fallback, str(name), pct)
+
+    return fallback
+
+
 def _build_sector_pct_fallback_map() -> Dict[str, Optional[float]]:
     """
     Pull one snapshot of industry/concept flow and build a name->pct map.
     This is used as fallback when `get_sector_sentiment` cannot resolve flow_pct.
     """
+    now = time.time()
+    cached = _SECTOR_PCT_FALLBACK_CACHE.get("data") or {}
+    ts = float(_SECTOR_PCT_FALLBACK_CACHE.get("ts") or 0.0)
+    if cached and (now - ts) <= _SECTOR_PCT_FALLBACK_TTL_SECONDS:
+        return dict(cached)
+
     try:
         from backend.services.sector_flow_service import sector_fund_flow_core
     except Exception:
@@ -104,10 +196,16 @@ def _build_sector_pct_fallback_map() -> Dict[str, Optional[float]]:
                 if row.get("chg_pct") is not None
                 else row.get("change_pct")
             )
-            fallback[name] = pct
-            normalized = _norm_sector_text(name)
-            if normalized and normalized not in fallback:
-                fallback[normalized] = pct
+            _merge_sector_pct_row(fallback, name, pct)
+
+    # Merge full list from akshare THS as stronger fallback.
+    full_map = _build_sector_pct_fallback_map_from_akshare_full()
+    for k, v in full_map.items():
+        if k not in fallback:
+            fallback[k] = v
+
+    _SECTOR_PCT_FALLBACK_CACHE["ts"] = now
+    _SECTOR_PCT_FALLBACK_CACHE["data"] = dict(fallback)
     return fallback
 
 
