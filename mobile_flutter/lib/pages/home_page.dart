@@ -2218,17 +2218,6 @@ class _HomePageState extends State<HomePage> {
           ],
         ),
         const SizedBox(height: 12),
-        _buildMeSection(
-          [
-            _buildMeRow(
-              icon: Icons.group_outlined,
-              title: "邀请码",
-              onTap: () => _showFeatureHint("邀请码"),
-              showDivider: false,
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
       ],
     );
   }
