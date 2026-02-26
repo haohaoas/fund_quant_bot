@@ -27,72 +27,6 @@ FUND_TO_SECTOR: Dict[str, str] = {
     "015790": "航空航天",
 }
 
-
-def _infer_sector_from_fund_name(name: str) -> str:
-    n = str(name or "").strip()
-    if not n:
-        return ""
-    kw_map = [
-        ("半导体", "半导体"),
-        ("芯片", "半导体"),
-        ("光伏", "新能源"),
-        ("锂电", "新能源"),
-        ("新能源", "新能源"),
-        ("机器人", "机器人"),
-        ("人工智能", "AI应用"),
-        ("AI", "AI应用"),
-        ("算力", "AI应用"),
-        ("传媒", "中证传媒"),
-        ("通信", "5G通信"),
-        ("油气", "油气产业"),
-        ("军工", "商业航天"),
-        ("航天", "商业航天"),
-        ("有色", "有色金属"),
-        ("黄金", "沪港深黄金"),
-        ("纳指", "纳指100"),
-        ("中证1000", "中证1000"),
-        ("创业板", "创业板"),
-        ("沪深300", "沪深300"),
-    ]
-    upper_n = n.upper()
-    for kw, sector in kw_map:
-        if kw.isupper():
-            if kw in upper_n:
-                return sector
-        else:
-            if kw in n:
-                return sector
-    return ""
-
-
-def _get_fund_name_quick(code: str) -> str:
-    c = str(code or "").strip()
-    if not c:
-        return ""
-    # First try fast quote path.
-    try:
-        from backend.portfolio_service import fetch_fund_gz
-
-        gz = fetch_fund_gz(c) or {}
-        if gz.get("ok"):
-            nm = str(gz.get("name") or "").strip()
-            if nm:
-                return nm
-    except Exception:
-        pass
-
-    # Fallback: local name map.
-    try:
-        from data import get_fund_name
-
-        nm = str(get_fund_name(c) or "").strip()
-        if nm:
-            return nm
-    except Exception:
-        pass
-    return ""
-
-
 def get_sector_by_fund(code: str) -> str:
     c = str(code or "").strip()
     if not c:
@@ -108,29 +42,31 @@ def get_sector_by_fund(code: str) -> str:
     except Exception:
         pass
 
-    # First priority: infer by top holdings (stock-sector weighted).
-    try:
-        from backend.fund_sector_service import infer_fund_sector
+    static_sector = str(FUND_TO_SECTOR.get(c) or "").strip()
 
-        inferred = str(infer_fund_sector(c) or "").strip()
+    # First priority: cached table (and miss->resolve once->write cache).
+    try:
+        from backend.fund_sector_service import (
+            get_cached_fund_sector,
+            resolve_and_cache_fund_sector,
+        )
+
+        cached = get_cached_fund_sector(c) or {}
+        cached_sector = str(cached.get("sector") or "").strip()
+        if cached_sector:
+            return cached_sector
+
+        inferred = str(
+            resolve_and_cache_fund_sector(c, static_fallback=static_sector) or ""
+        ).strip()
         if inferred:
             return inferred
     except Exception:
         pass
 
-    # Fallback #1: static mapping.
-    static_sector = str(FUND_TO_SECTOR.get(c) or "").strip()
+    # Fallback: static mapping.
     if static_sector:
         return static_sector
-
-    # Fallback #2: infer from fund name keywords.
-    try:
-        name = _get_fund_name_quick(c)
-        inferred_from_name = _infer_sector_from_fund_name(name)
-        if inferred_from_name:
-            return inferred_from_name
-    except Exception:
-        pass
 
     return "未知板块"
 

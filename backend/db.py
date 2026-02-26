@@ -263,6 +263,20 @@ def init_db() -> None:
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_fund_sector_updated ON fund_sector_profile(updated_at);"
         )
+        # 基金 -> 板块缓存（展示直接读这里；缺失时拉取一次后写入）
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS fund_sector_cache (
+                fund_code TEXT PRIMARY KEY,
+                sector TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+            );
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_fund_sector_cache_updated ON fund_sector_cache(updated_at);"
+        )
         # 兼容旧库：先确保 legacy account 有默认行
         cur.execute(
             """

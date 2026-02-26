@@ -198,13 +198,20 @@ def _get_sector_label(code: str, name: str = "") -> str:
     if ov:
         return ov
 
-    # 优先尝试“前十大持仓加权”推导板块。
+    # 优先使用板块缓存表（miss 时会拉取一次并回填）。
     try:
-        from backend.fund_sector_service import infer_fund_sector
+        from backend.fund_sector_service import resolve_and_cache_fund_sector
 
-        inferred_by_holdings = str(infer_fund_sector(code) or "").strip()
-        if inferred_by_holdings:
-            return inferred_by_holdings
+        cached_or_resolved = str(
+            resolve_and_cache_fund_sector(
+                str(code or "").strip(),
+                fund_name=str(name or "").strip(),
+                static_fallback=str(FUND_TO_SECTOR.get(str(code or "").strip()) or ""),
+            )
+            or ""
+        ).strip()
+        if cached_or_resolved:
+            return cached_or_resolved
     except Exception:
         pass
 

@@ -91,6 +91,14 @@ def list_watchlist(user_id: int) -> List[Dict[str, Any]]:
         get_sector_by_fund = None
         get_sector_sentiment = None
     try:
+        from backend.fund_sector_service import (
+            get_cached_fund_sector,
+            resolve_and_cache_fund_sector,
+        )
+    except Exception:
+        get_cached_fund_sector = None
+        resolve_and_cache_fund_sector = None
+    try:
         from backend.portfolio_service import fetch_fund_gz
     except Exception:
         fetch_fund_gz = None
@@ -159,13 +167,25 @@ def list_watchlist(user_id: int) -> List[Dict[str, Any]]:
                 pass
 
         # Enrich sector info for watchlist table.
-        if callable(get_sector_by_fund):
+        sector_name = ""
+        if callable(get_cached_fund_sector):
+            try:
+                cached = get_cached_fund_sector(code) or {}
+                sector_name = str(cached.get("sector") or "").strip()
+            except Exception:
+                sector_name = ""
+        if (not sector_name) and callable(resolve_and_cache_fund_sector):
+            try:
+                sector_name = str(
+                    resolve_and_cache_fund_sector(code, fund_name=item["name"]) or ""
+                ).strip()
+            except Exception:
+                sector_name = ""
+        if (not sector_name) and callable(get_sector_by_fund):
             try:
                 sector_name = str(get_sector_by_fund(code) or "").strip()
             except Exception:
                 sector_name = ""
-        else:
-            sector_name = ""
         if sector_name and sector_name != "未知板块":
             item["sector_name"] = sector_name
         else:
@@ -211,7 +231,20 @@ def upsert_watchlist(user_id: int, code: str, name: str = "") -> Dict[str, Any]:
         ).fetchone()
     if not row:
         raise ValueError("save watchlist failed")
-    return _item_from_row(dict(row))
+    item = _item_from_row(dict(row))
+
+    # Warm sector cache once on add/update, then future reads can use DB cache directly.
+    try:
+        from backend.fund_sector_service import resolve_and_cache_fund_sector
+
+        resolve_and_cache_fund_sector(
+            c,
+            fund_name=item.get("name") or nm,
+        )
+    except Exception:
+        pass
+
+    return item
 
 
 def remove_watchlist(user_id: int, code: str) -> bool:

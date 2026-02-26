@@ -18,6 +18,9 @@ init_db()
 _ENABLE_HOLDING_INFER = os.getenv("FUND_SECTOR_BY_HOLDINGS", "1").strip() == "1"
 _PROFILE_TTL_SECONDS = int(os.getenv("FUND_SECTOR_PROFILE_TTL_SECONDS", "86400"))
 _STOCK_SECTOR_TTL_SECONDS = int(os.getenv("STOCK_SECTOR_TTL_SECONDS", "2592000"))
+_FUND_SECTOR_CACHE_TTL_SECONDS = int(
+    os.getenv("FUND_SECTOR_CACHE_TTL_SECONDS", "2592000")
+)
 
 
 def _now_str() -> str:
@@ -142,6 +145,48 @@ def _load_fund_profile(fund_code: str) -> Optional[Dict[str, Any]]:
         "source": str(row["source"] or "").strip(),
         "updated_at": str(row["updated_at"] or "").strip(),
     }
+
+
+def get_cached_fund_sector(code: str) -> Optional[Dict[str, str]]:
+    c = _norm_fund_code(code)
+    if not c:
+        return None
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT fund_code, sector, source, updated_at
+            FROM fund_sector_cache
+            WHERE fund_code = ?
+            """,
+            (c,),
+        ).fetchone()
+    if not row:
+        return None
+    return {
+        "fund_code": str(row["fund_code"] or "").strip(),
+        "sector": str(row["sector"] or "").strip(),
+        "source": str(row["source"] or "").strip(),
+        "updated_at": str(row["updated_at"] or "").strip(),
+    }
+
+
+def set_cached_fund_sector(code: str, sector: str, source: str) -> None:
+    c = _norm_fund_code(code)
+    s = str(sector or "").strip()
+    if not c:
+        return
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO fund_sector_cache (fund_code, sector, source, updated_at)
+            VALUES (?, ?, ?, datetime('now','localtime'))
+            ON CONFLICT(fund_code) DO UPDATE SET
+                sector = excluded.sector,
+                source = excluded.source,
+                updated_at = datetime('now','localtime')
+            """,
+            (c, s, str(source or "").strip()),
+        )
 
 
 def _save_fund_profile(
@@ -405,8 +450,117 @@ def get_fund_sector_profile(code: str, refresh: bool = False) -> Dict[str, Any]:
     return profile
 
 
+def _infer_sector_from_fund_name(name: str) -> str:
+    n = str(name or "").strip()
+    if not n:
+        return ""
+    kw_map = [
+        ("半导体", "半导体"),
+        ("芯片", "半导体"),
+        ("光伏", "新能源"),
+        ("锂电", "新能源"),
+        ("新能源", "新能源"),
+        ("机器人", "机器人"),
+        ("人工智能", "AI应用"),
+        ("AI", "AI应用"),
+        ("算力", "AI应用"),
+        ("传媒", "中证传媒"),
+        ("通信", "5G通信"),
+        ("油气", "油气产业"),
+        ("军工", "商业航天"),
+        ("航天", "商业航天"),
+        ("有色", "有色金属"),
+        ("黄金", "沪港深黄金"),
+        ("纳指", "纳指100"),
+        ("中证1000", "中证1000"),
+        ("创业板", "创业板"),
+        ("沪深300", "沪深300"),
+    ]
+    upper_n = n.upper()
+    for kw, sector in kw_map:
+        if kw.isupper():
+            if kw in upper_n:
+                return sector
+        else:
+            if kw in n:
+                return sector
+    return ""
+
+
+def _get_fund_name_quick(code: str, fallback_name: str = "") -> str:
+    name = str(fallback_name or "").strip()
+    if name:
+        return name
+    c = _norm_fund_code(code)
+    if not c:
+        return ""
+    try:
+        from backend.portfolio_service import fetch_fund_gz
+
+        gz = fetch_fund_gz(c) or {}
+        if gz.get("ok"):
+            nm = str(gz.get("name") or "").strip()
+            if nm:
+                return nm
+    except Exception:
+        pass
+    try:
+        from data import get_fund_name
+
+        nm = str(get_fund_name(c) or "").strip()
+        if nm:
+            return nm
+    except Exception:
+        pass
+    return ""
+
+
+def resolve_and_cache_fund_sector(
+    code: str,
+    *,
+    fund_name: str = "",
+    static_fallback: str = "",
+    force_refresh: bool = False,
+) -> str:
+    c = _norm_fund_code(code)
+    if not c:
+        return ""
+
+    cached = get_cached_fund_sector(c)
+    if (
+        cached
+        and not force_refresh
+        and _is_fresh(str(cached.get("updated_at") or ""), _FUND_SECTOR_CACHE_TTL_SECONDS)
+    ):
+        return str(cached.get("sector") or "").strip()
+
+    # Step 1: weighted holdings.
+    sector = infer_fund_sector(c, refresh=force_refresh)
+    if sector:
+        set_cached_fund_sector(c, sector, "top10_holdings_weighted")
+        return sector
+
+    # Step 2: fallback static map.
+    sf = str(static_fallback or "").strip()
+    if sf:
+        set_cached_fund_sector(c, sf, "static_mapping")
+        return sf
+
+    # Step 3: fallback fund name keyword.
+    nm = _get_fund_name_quick(c, fallback_name=fund_name)
+    by_name = _infer_sector_from_fund_name(nm)
+    if by_name:
+        set_cached_fund_sector(c, by_name, "fund_name_keyword")
+        return by_name
+
+    # Preserve stale cached value when fresh resolve failed.
+    if cached:
+        return str(cached.get("sector") or "").strip()
+    set_cached_fund_sector(c, "未知板块", "unresolved")
+    return "未知板块"
+
+
 def infer_fund_sector(code: str, refresh: bool = False) -> str:
     profile = get_fund_sector_profile(code, refresh=refresh)
     sector = str(profile.get("dominant_sector") or "").strip()
     return sector
-
