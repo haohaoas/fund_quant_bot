@@ -8,6 +8,7 @@ import "package:intl/intl.dart";
 
 import "../models/account.dart";
 import "../models/market_index.dart";
+import "../models/news.dart";
 import "../models/portfolio.dart";
 import "../models/sector_flow.dart";
 import "../models/watchlist.dart";
@@ -99,6 +100,7 @@ class _HomePageState extends State<HomePage> {
 
   PortfolioResponse? _portfolio;
   SectorFlowResponse? _sectorFlow;
+  NewsListResponse? _newsList;
   List<WatchlistItem> _watchlist = const [];
   List<MarketIndexQuote> _majorIndices = const [];
   List<AppAccount> _accounts = const [];
@@ -107,12 +109,14 @@ class _HomePageState extends State<HomePage> {
   String? _portfolioError;
   String? _watchlistError;
   String? _sectorError;
+  String? _newsError;
   String? _indicesError;
   String? _accountsError;
 
   bool _loadingPortfolio = false;
   bool _loadingWatchlist = false;
   bool _loadingSector = false;
+  bool _loadingNews = false;
   bool _loadingIndices = false;
   bool _loadingAccounts = false;
   bool _submittingInvestment = false;
@@ -128,6 +132,7 @@ class _HomePageState extends State<HomePage> {
     await _loadAccounts();
     unawaited(_loadWatchlist());
     unawaited(_loadSectorFlow());
+    unawaited(_loadNews());
     unawaited(_loadMajorIndices());
     await _loadPortfolio(forceRefresh: forceRefresh);
   }
@@ -337,6 +342,36 @@ class _HomePageState extends State<HomePage> {
       if (mounted) {
         setState(() {
           _loadingIndices = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _loadNews() async {
+    setState(() {
+      _loadingNews = true;
+      _newsError = null;
+    });
+
+    try {
+      final data = await widget.apiClient.fetchNewsList(limit: 60);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _newsList = data;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _newsError = error.toString();
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _loadingNews = false;
         });
       }
     }
@@ -2205,6 +2240,136 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  Widget _buildNewsTab(BuildContext context) {
+    if (_loadingNews && _newsList == null) {
+      return _buildLoadingBody();
+    }
+
+    final data = _newsList;
+    final items = data?.items ?? const <NewsItem>[];
+
+    return ListView(
+      physics: const AlwaysScrollableScrollPhysics(
+        parent: ClampingScrollPhysics(),
+      ),
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 16),
+      children: [
+        _buildErrorCard(_newsError),
+        Container(
+          padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.newspaper_rounded, color: Color(0xFF2E5ED7)),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  "市场资讯 ${data?.generatedAt.isNotEmpty == true ? "· ${data!.generatedAt}" : ""}",
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1F2A44),
+                  ),
+                ),
+              ),
+              Text(
+                data?.source.isNotEmpty == true ? data!.source : "-",
+                style: const TextStyle(fontSize: 12, color: Color(0xFF7B8599)),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 10),
+        Container(
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: items.isEmpty
+              ? const Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Text(
+                    "暂无新闻内容，请稍后下拉刷新。",
+                    style: TextStyle(color: Color(0xFF7B8599)),
+                  ),
+                )
+              : Column(
+                  children: items
+                      .take(80)
+                      .map(
+                        (item) => Container(
+                          padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                          decoration: const BoxDecoration(
+                            border: Border(
+                              bottom: BorderSide(color: Color(0xFFF0F2F7)),
+                            ),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                item.title,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w700,
+                                  color: Color(0xFF1F2A44),
+                                ),
+                              ),
+                              if (item.summary.trim().isNotEmpty) ...[
+                                const SizedBox(height: 6),
+                                Text(
+                                  item.summary.trim(),
+                                  maxLines: 3,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontSize: 13,
+                                    color: Color(0xFF5D6578),
+                                    height: 1.35,
+                                  ),
+                                ),
+                              ],
+                              const SizedBox(height: 6),
+                              Row(
+                                children: [
+                                  Text(
+                                    item.mediaName.trim().isEmpty
+                                        ? "财经资讯"
+                                        : item.mediaName.trim(),
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      color: Color(0xFF7B8599),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      item.ctime.trim(),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontSize: 12,
+                                        color: Color(0xFF9AA1B2),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      )
+                      .toList(),
+                ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildMeTab(BuildContext context) {
     final topInset = MediaQuery.of(context).padding.top;
     return ListView(
@@ -2275,7 +2440,7 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
-    final tabTitles = <String>["持有", "自选", "资金流", "我的"];
+    final tabTitles = <String>["持有", "自选", "资金流", "新闻", "我的"];
 
     Widget body;
     switch (_tabIndex) {
@@ -2286,6 +2451,8 @@ class _HomePageState extends State<HomePage> {
       case 2:
         body = _buildFlowTab(context);
       case 3:
+        body = _buildNewsTab(context);
+      case 4:
         body = _buildMeTab(context);
       default:
         body = _buildHoldingsTab(context);
@@ -2299,12 +2466,12 @@ class _HomePageState extends State<HomePage> {
       ),
       child: Scaffold(
         backgroundColor: const Color(0xFFF3F5F9),
-        appBar: _tabIndex == 0 || _tabIndex == 3
+        appBar: _tabIndex == 0 || _tabIndex == 4
             ? null
             : AppBar(
                 title: Text(tabTitles[_tabIndex]),
               ),
-        body: _tabIndex == 0 || _tabIndex == 3
+        body: _tabIndex == 0 || _tabIndex == 4
             ? body
             : RefreshIndicator(
                 onRefresh: () => _reload(forceRefresh: true),
@@ -2361,6 +2528,11 @@ class _HomePageState extends State<HomePage> {
                       icon: Icon(Icons.show_chart_outlined),
                       activeIcon: Icon(Icons.show_chart),
                       label: "资金流",
+                    ),
+                    BottomNavigationBarItem(
+                      icon: Icon(Icons.article_outlined),
+                      activeIcon: Icon(Icons.article),
+                      label: "新闻",
                     ),
                     BottomNavigationBarItem(
                       icon: Icon(Icons.person_outline),

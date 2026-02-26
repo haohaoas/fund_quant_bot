@@ -17,6 +17,7 @@ from backend.routers.trades import router as trades_router
 from backend.routers.quotes import router as quotes_router
 from backend.routers.market import router as market_router
 from backend.routers.recommendations import router as recommendations_router  # 新增
+from backend.routers.news import router as news_router
 from backend.routers.watchlist import router as watchlist_router
 from backend.ui_router import router as ui_router
 
@@ -73,6 +74,7 @@ def create_app() -> FastAPI:
     app.include_router(quotes_router)
     app.include_router(market_router)
     app.include_router(recommendations_router)
+    app.include_router(news_router)
     app.include_router(watchlist_router)
     # UI router (front-end pages / static / etc.)
     app.include_router(ui_router)

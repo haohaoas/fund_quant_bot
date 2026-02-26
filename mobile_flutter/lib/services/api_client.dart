@@ -4,6 +4,7 @@ import "package:http/http.dart" as http;
 
 import "../models/account.dart";
 import "../models/market_index.dart";
+import "../models/news.dart";
 import "../models/portfolio.dart";
 import "../models/recommendations.dart";
 import "../models/sector_flow.dart";
@@ -175,6 +176,18 @@ class ApiClient {
     _ensureSuccess(response, uri);
     final payload = _decodeMap(response.body);
     return RecommendationsResponse.fromJson(payload);
+  }
+
+  Future<NewsListResponse> fetchNewsList({int limit = 40}) async {
+    final uri = Uri.parse("$baseUrl/api/news").replace(
+      queryParameters: {
+        "limit": "$limit",
+      },
+    );
+    final response = await _client.get(uri).timeout(_requestTimeout);
+    _ensureSuccess(response, uri);
+    final payload = _decodeMap(response.body);
+    return NewsListResponse.fromJson(payload);
   }
 
   Future<SectorFlowResponse> fetchSectorFlow({
