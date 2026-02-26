@@ -28,10 +28,85 @@ FUND_TO_SECTOR: Dict[str, str] = {
 }
 
 
+def _infer_sector_from_fund_name(name: str) -> str:
+    n = str(name or "").strip()
+    if not n:
+        return ""
+    kw_map = [
+        ("半导体", "半导体"),
+        ("芯片", "半导体"),
+        ("光伏", "新能源"),
+        ("锂电", "新能源"),
+        ("新能源", "新能源"),
+        ("机器人", "机器人"),
+        ("人工智能", "AI应用"),
+        ("AI", "AI应用"),
+        ("算力", "AI应用"),
+        ("传媒", "中证传媒"),
+        ("通信", "5G通信"),
+        ("油气", "油气产业"),
+        ("军工", "商业航天"),
+        ("航天", "商业航天"),
+        ("有色", "有色金属"),
+        ("黄金", "沪港深黄金"),
+        ("纳指", "纳指100"),
+        ("中证1000", "中证1000"),
+        ("创业板", "创业板"),
+        ("沪深300", "沪深300"),
+    ]
+    upper_n = n.upper()
+    for kw, sector in kw_map:
+        if kw.isupper():
+            if kw in upper_n:
+                return sector
+        else:
+            if kw in n:
+                return sector
+    return ""
+
+
+def _get_fund_name_quick(code: str) -> str:
+    c = str(code or "").strip()
+    if not c:
+        return ""
+    # First try fast quote path.
+    try:
+        from backend.portfolio_service import fetch_fund_gz
+
+        gz = fetch_fund_gz(c) or {}
+        if gz.get("ok"):
+            nm = str(gz.get("name") or "").strip()
+            if nm:
+                return nm
+    except Exception:
+        pass
+
+    # Fallback: local name map.
+    try:
+        from data import get_fund_name
+
+        nm = str(get_fund_name(c) or "").strip()
+        if nm:
+            return nm
+    except Exception:
+        pass
+    return ""
+
+
 def get_sector_by_fund(code: str) -> str:
     c = str(code or "").strip()
     if not c:
         return "未知板块"
+
+    # Highest priority: manual override.
+    try:
+        from backend.portfolio_service import get_sector_override
+
+        ov = str(get_sector_override(c) or "").strip()
+        if ov:
+            return ov
+    except Exception:
+        pass
 
     # First priority: infer by top holdings (stock-sector weighted).
     try:
@@ -43,8 +118,21 @@ def get_sector_by_fund(code: str) -> str:
     except Exception:
         pass
 
-    # Fallback: static mapping.
-    return FUND_TO_SECTOR.get(c, "未知板块")
+    # Fallback #1: static mapping.
+    static_sector = str(FUND_TO_SECTOR.get(c) or "").strip()
+    if static_sector:
+        return static_sector
+
+    # Fallback #2: infer from fund name keywords.
+    try:
+        name = _get_fund_name_quick(c)
+        inferred_from_name = _infer_sector_from_fund_name(name)
+        if inferred_from_name:
+            return inferred_from_name
+    except Exception:
+        pass
+
+    return "未知板块"
 
 
 # === 行业资金流缓存（低频） ===
