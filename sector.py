@@ -74,6 +74,8 @@ def get_sector_by_fund(code: str) -> str:
 # === 行业资金流缓存（低频） ===
 _FLOW_CACHE = {"ts": 0.0, "df": None}
 _FLOW_CACHE_TTL = 120  # 秒
+_BOARD_PCT_CACHE = {"ts": 0.0, "map": {}}
+_BOARD_PCT_CACHE_TTL = 120  # 秒
 
 
 def _safe_float(x, default: float = 0.0) -> float:
@@ -88,6 +90,15 @@ def _safe_float(x, default: float = 0.0) -> float:
         return float(s)
     except Exception:
         return default
+
+
+def _norm_sector_text(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    for token in ("板块", "概念", "行业", "主题", "产业", "赛道", "指数"):
+        text = text.replace(token, "")
+    return text.strip()
 
 
 def _pick_col(df, keys):
@@ -119,6 +130,72 @@ def _get_sector_flow_df():
         except Exception:
             pass
 
+    return None
+
+
+def _get_sector_board_pct_map() -> Dict[str, float]:
+    if ak is None:
+        return {}
+
+    now = time.time()
+    cached = _BOARD_PCT_CACHE.get("map")
+    if isinstance(cached, dict) and cached and (now - _BOARD_PCT_CACHE.get("ts", 0.0)) <= _BOARD_PCT_CACHE_TTL:
+        return cached
+
+    try:
+        from backend.services.sector_flow_service import akshare_no_proxy
+    except Exception:
+        akshare_no_proxy = None
+
+    def _load_df(fn_name: str):
+        fn = getattr(ak, fn_name, None)
+        if not callable(fn):
+            return None
+        try:
+            if callable(akshare_no_proxy):
+                with akshare_no_proxy():
+                    return fn()
+            return fn()
+        except Exception:
+            return None
+
+    result: Dict[str, float] = {}
+    for fn_name in ("stock_board_industry_name_em", "stock_board_concept_name_em"):
+        df = _load_df(fn_name)
+        if df is None or len(df) == 0:
+            continue
+        for _, row in df.iterrows():
+            name = str(row.get("板块名称") or row.get("名称") or row.get("行业") or row.get("概念") or "").strip()
+            if not name:
+                continue
+            pct = _safe_float(row.get("涨跌幅") if "涨跌幅" in df.columns else row.get("涨跌"), default=None)
+            if pct is None:
+                continue
+            result[name] = float(pct)
+            norm = _norm_sector_text(name)
+            if norm and norm not in result:
+                result[norm] = float(pct)
+
+    _BOARD_PCT_CACHE["ts"] = now
+    _BOARD_PCT_CACHE["map"] = result
+    return result
+
+
+def _lookup_sector_board_pct(board_map: Dict[str, float], sector: str) -> Optional[float]:
+    key = str(sector or "").strip()
+    if not key:
+        return None
+    if key in board_map:
+        return board_map[key]
+    norm = _norm_sector_text(key)
+    if norm in board_map:
+        return board_map[norm]
+    for cand, pct in board_map.items():
+        if key in cand or cand in key:
+            return pct
+        c_norm = _norm_sector_text(cand)
+        if norm and c_norm and (norm in c_norm or c_norm in norm):
+            return pct
     return None
 
 
@@ -172,6 +249,7 @@ def _flow_to_score(inflow: float, pct: float) -> int:
 
 def get_sector_sentiment(sector: str) -> Dict[str, Any]:
     sector = str(sector).strip()
+    board_map = _get_sector_board_pct_map()
 
     df = _get_sector_flow_df()
     alias_map = {
@@ -182,7 +260,10 @@ def get_sector_sentiment(sector: str) -> Dict[str, Any]:
     candidates.extend(alias_map.get(sector, []))
 
     hit = None
+    board_pct = None
     for cand in candidates:
+        if board_pct is None:
+            board_pct = _lookup_sector_board_pct(board_map, cand)
         hit = _lookup_sector_flow(df, cand)
         if hit:
             break
@@ -191,7 +272,11 @@ def get_sector_sentiment(sector: str) -> Dict[str, Any]:
     flow_pct = None
     if hit:
         flow_inflow = float(hit["inflow"])
-        flow_pct = float(hit["pct"])
+        flow_pct = float(hit["pct"]) if hit.get("pct") is not None else board_pct
+        score = _flow_to_score(flow_inflow, flow_pct)
+    elif board_pct is not None:
+        flow_inflow = 0.0
+        flow_pct = float(board_pct)
         score = _flow_to_score(flow_inflow, flow_pct)
     else:
         base_scores = {
@@ -221,6 +306,8 @@ def get_sector_sentiment(sector: str) -> Dict[str, Any]:
 
     if hit:
         comment += f"（{hit['name']}：主力净流入 {flow_inflow/1e8:.1f} 亿，涨跌幅 {flow_pct:.2f}%）"
+    elif board_pct is not None:
+        comment += f"（板块涨跌幅 {board_pct:.2f}%）"
 
     return {
         "sector": sector,
