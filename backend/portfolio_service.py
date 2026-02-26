@@ -84,6 +84,34 @@ def _parse_jsonp_obj(text: str) -> Dict[str, Any]:
         return {}
 
 
+def _parse_local_date(value: Any):
+    s = str(value or "").strip()
+    if not s:
+        return None
+    for fmt in (
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+        "%Y-%m-%d %H:%M",
+        "%Y/%m/%d %H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m/%d %H:%M:%S",
+    ):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except Exception:
+            continue
+    return None
+
+
+def _is_nav_settled(gz: Dict[str, Any]) -> bool:
+    jzrq_date = _parse_local_date(gz.get("jzrq"))
+    if jzrq_date is None:
+        return False
+    # gztime 通常是估值时间，若可解析则以其日期作为“当前交易日”判断基准。
+    ref_date = _parse_local_date(gz.get("gztime")) or datetime.now().date()
+    return jzrq_date >= ref_date
+
+
 def fetch_fund_gz(code: str) -> Dict[str, Any]:
     """Fetch realtime/estimated fund info from Eastmoney fundgz."""
     c = str(code).strip()
@@ -255,6 +283,8 @@ def enrich_position(pos: Dict[str, Any]) -> Dict[str, Any]:
     holding_profit_pct = ((nav - cost) / cost * 100.0) if (nav is not None and cost > 0) else None
 
     daily_profit = (shares * (nav - prev_nav)) if (nav is not None and prev_nav is not None) else None
+    jzrq = str(gz.get("jzrq") or "").strip() if gz.get("ok") else ""
+    nav_settled = _is_nav_settled(gz) if gz.get("ok") else False
 
     sector_label = _get_sector_label(code, name)
     sector_pct = None
@@ -280,6 +310,8 @@ def enrich_position(pos: Dict[str, Any]) -> Dict[str, Any]:
             "holding_profit": _round_or_none(holding_profit, 2),
             "holding_profit_pct": _round_or_none(holding_profit_pct, 2),
             "data_source": "fundgz" if gz.get("ok") else "",
+            "jzrq": jzrq,
+            "nav_settled": bool(nav_settled),
             "gztime": str(gz.get("gztime") or "").strip() if gz.get("ok") else "",
         }
     )

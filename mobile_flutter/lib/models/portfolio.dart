@@ -51,6 +51,8 @@ class PortfolioPosition {
     required this.shares,
     required this.cost,
     required this.latestNav,
+    required this.navDate,
+    required this.navSettled,
     required this.dailyChangePct,
     required this.dailyProfit,
     required this.marketValue,
@@ -65,6 +67,8 @@ class PortfolioPosition {
   final double shares;
   final double cost;
   final double? latestNav;
+  final String navDate;
+  final bool navSettled;
   final double? dailyChangePct;
   final double? dailyProfit;
   final double? marketValue;
@@ -82,6 +86,26 @@ class PortfolioPosition {
       return double.tryParse(value.toString());
     }
 
+    bool parseBool(dynamic value, [bool fallback = false]) {
+      if (value == null) {
+        return fallback;
+      }
+      if (value is bool) {
+        return value;
+      }
+      if (value is num) {
+        return value != 0;
+      }
+      final text = value.toString().trim().toLowerCase();
+      if (text == "true" || text == "1" || text == "yes") {
+        return true;
+      }
+      if (text == "false" || text == "0" || text == "no") {
+        return false;
+      }
+      return fallback;
+    }
+
     return PortfolioPosition(
       code: _toStringValue(json["code"], "-"),
       name: _toStringValue(json["name"], _toStringValue(json["code"], "-")),
@@ -90,6 +114,8 @@ class PortfolioPosition {
       shares: _toDouble(json["shares"]),
       cost: _toDouble(json["cost"]),
       latestNav: parseNullableDouble(json["latest_nav"]),
+      navDate: _toStringValue(json["jzrq"]),
+      navSettled: parseBool(json["nav_settled"]),
       dailyChangePct: parseNullableDouble(json["daily_change_pct"]),
       dailyProfit: parseNullableDouble(json["daily_profit"]),
       marketValue: parseNullableDouble(json["market_value"]),

@@ -792,6 +792,30 @@ class _HomePageState extends State<HomePage> {
 
   String _fmt(double value) => _numberFormat.format(value);
 
+  String _shortNavDateLabel(String raw) {
+    final text = raw.trim();
+    if (text.isEmpty) {
+      return "";
+    }
+    try {
+      final parsed = DateTime.parse(text);
+      return DateFormat("MM-dd").format(parsed);
+    } catch (_) {
+      if (text.length >= 10) {
+        return text.substring(5, 10);
+      }
+      return text;
+    }
+  }
+
+  String _updatedBadgeText(String navDate) {
+    final short = _shortNavDateLabel(navDate);
+    if (short.isEmpty) {
+      return "已更新";
+    }
+    return "已更新 $short";
+  }
+
   double _settledAccountAsset(PortfolioAccount account) {
     return account.totalAsset - account.dailyProfit;
   }
@@ -1355,10 +1379,37 @@ class _HomePageState extends State<HomePage> {
                             ),
                           ),
                           const SizedBox(height: 4),
-                          Text(
-                            "¥ ${_settledPositionValue(position) == null ? "--" : _fmt(_settledPositionValue(position)!)}",
-                            style: const TextStyle(
-                                color: Color(0xFF7B8599), fontSize: 14),
+                          Row(
+                            children: [
+                              Text(
+                                "¥ ${_settledPositionValue(position) == null ? "--" : _fmt(_settledPositionValue(position)!)}",
+                                style: const TextStyle(
+                                  color: Color(0xFF7B8599),
+                                  fontSize: 14,
+                                ),
+                              ),
+                              if (position.navSettled) ...[
+                                const SizedBox(width: 6),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 5,
+                                    vertical: 1,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFEAF8EF),
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: Text(
+                                    _updatedBadgeText(position.navDate),
+                                    style: const TextStyle(
+                                      color: Color(0xFF17A34A),
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ],
                           ),
                         ],
                       ),
