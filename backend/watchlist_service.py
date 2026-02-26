@@ -193,12 +193,9 @@ def list_watchlist(user_id: int) -> List[Dict[str, Any]]:
                 sector_name = str(get_sector_by_fund(code) or "").strip()
             except Exception:
                 sector_name = ""
-        if sector_name and sector_name != "未知板块":
-            item["sector_name"] = sector_name
-        else:
-            item["sector_name"] = ""
+        item["sector_name"] = sector_name or "未知板块"
 
-        if item["sector_name"] and callable(get_sector_sentiment):
+        if item["sector_name"] and item["sector_name"] != "未知板块" and callable(get_sector_sentiment):
             try:
                 senti = get_sector_sentiment(item["sector_name"]) or {}
             except Exception:
