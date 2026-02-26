@@ -303,7 +303,31 @@ def _match_sector_pct_from_fallback(
         cand_norm = _norm_sector_text(cand_name)
         if norm and cand_norm and (norm in cand_norm or cand_norm in norm):
             return cand_pct
-    return None
+
+    # Similar-name fallback (e.g. 影视院线 -> 影视传媒).
+    try:
+        import difflib
+    except Exception:
+        return None
+
+    best_pct: Optional[float] = None
+    best_score = 0.0
+    key2 = norm or key
+    key_prefix = key2[:2] if len(key2) >= 2 else key2
+    for cand_name, cand_pct in fallback_map.items():
+        if cand_pct is None:
+            continue
+        cand_norm = _norm_sector_text(cand_name) or str(cand_name or "").strip()
+        if not cand_norm:
+            continue
+        cand_prefix = cand_norm[:2] if len(cand_norm) >= 2 else cand_norm
+        score = difflib.SequenceMatcher(None, key2, cand_norm).ratio()
+        prefix_hit = bool(key_prefix and cand_prefix and (key_prefix == cand_prefix))
+        if score >= 0.7 or (prefix_hit and score >= 0.5):
+            if score > best_score:
+                best_score = score
+                best_pct = cand_pct
+    return best_pct
 
 
 def list_watchlist(user_id: int) -> List[Dict[str, Any]]:
