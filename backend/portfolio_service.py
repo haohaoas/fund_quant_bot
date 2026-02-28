@@ -13,7 +13,7 @@
 """
 
 from typing import Dict, Any, List, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 import sqlite3
 
@@ -107,24 +107,29 @@ def _is_nav_settled(gz: Dict[str, Any]) -> bool:
     jzrq_date = _parse_local_date(gz.get("jzrq"))
     if jzrq_date is None:
         return False
-    # fundgz 的 jzrq 是“已披露净值日期”，通常会滞后当前估值日 1 个交易日（T+1 晚上披露 T 日）。
-    # 原先使用 jzrq >= ref_date 会导致几乎一直为 False。
-    #
-    # 判定策略：
-    # 1) jzrq == 参考日：已更新；
-    # 2) jzrq == 参考日前一日：仅在晚间（>=18:00）视为“已更新”；
-    # 3) 周末/节假日允许前 2-3 日净值维持“已更新”（避免周末全量丢标识）。
-    now_dt = datetime.now()
-    ref_date = _parse_local_date(gz.get("gztime")) or now_dt.date()
-    delta_days = (ref_date - jzrq_date).days
 
-    if delta_days <= 0:
-        return True
-    if delta_days == 1:
-        return now_dt.hour >= 18
-    if ref_date.weekday() >= 5 and delta_days <= 3:
-        return True
-    return False
+    def _prev_trade_day(d):
+        cur = d - timedelta(days=1)
+        while cur.weekday() >= 5:
+            cur -= timedelta(days=1)
+        return cur
+
+    def _latest_expected_settled_date(now_dt: datetime):
+        today = now_dt.date()
+        # 周末/休市日：最新净值应至少到最近交易日
+        if today.weekday() >= 5:
+            cur = today
+            while cur.weekday() >= 5:
+                cur -= timedelta(days=1)
+            return cur
+        # 交易日晚间（默认20:00后）才期望“T日净值”可见
+        if now_dt.hour >= 20:
+            return today
+        # 白天/傍晚：只期望到上一交易日
+        return _prev_trade_day(today)
+
+    expected = _latest_expected_settled_date(datetime.now())
+    return jzrq_date >= expected
 
 
 def fetch_fund_gz(code: str) -> Dict[str, Any]:
