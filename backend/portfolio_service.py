@@ -49,6 +49,8 @@ _SETTLED_NAV_TTL_SECONDS = 900
 _SETTLED_NAV_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _OPEN_FUND_DAILY_TTL_SECONDS = 600
 _OPEN_FUND_DAILY_CACHE: Dict[str, Any] = {"ts": 0.0, "data": {}}
+_ETF_SPOT_TTL_SECONDS = 120
+_ETF_SPOT_CACHE: Dict[str, Any] = {"ts": 0.0, "data": {}}
 DEFAULT_ACCOUNT_ID = 1
 _QUOTE_SOURCE_MODES = {"auto", "estimate", "settled"}
 
@@ -407,7 +409,28 @@ def _fallback_quote_from_settled_nav(code: str) -> Dict[str, Any]:
     snap = _fetch_settled_nav_snapshot(c, "")
     nav = _safe_float(snap.get("nav")) if snap else None
     if nav is None:
-        return {"ok": False, "error": "settled snapshot unavailable"}
+        etf = _fetch_etf_spot_snapshot(c)
+        e_nav = _safe_float((etf or {}).get("nav"))
+        if e_nav is None:
+            return {"ok": False, "error": "settled snapshot unavailable"}
+        e_prev = _safe_float((etf or {}).get("prev_nav"))
+        e_pct = _safe_float((etf or {}).get("daily_change_pct"))
+        if e_pct is None and e_prev not in (None, 0):
+            try:
+                e_pct = (float(e_nav) - float(e_prev)) / float(e_prev) * 100.0
+            except Exception:
+                e_pct = None
+        return {
+            "ok": True,
+            "code": c,
+            "name": str((etf or {}).get("name") or "").strip(),
+            "nav": float(e_nav),
+            "prev_nav": float(e_prev) if e_prev is not None else None,
+            "daily_change_pct": float(e_pct) if e_pct is not None else None,
+            "jzrq": str((etf or {}).get("jzrq") or "").strip(),
+            "gztime": str((etf or {}).get("gztime") or "").strip(),
+            "source": str((etf or {}).get("source") or "etf_fallback"),
+        }
     prev_nav = _safe_float(snap.get("prev_nav")) if snap.get("prev_nav") is not None else None
     pct = _safe_float(snap.get("daily_change_pct")) if snap.get("daily_change_pct") is not None else None
     if pct is None and prev_nav not in (None, 0):
@@ -435,6 +458,114 @@ def _fallback_quote_from_settled_nav(code: str) -> Dict[str, Any]:
         "gztime": "",
         "source": "settled_fallback",
     }
+
+
+def _build_etf_spot_map_from_df(df: Any, source: str) -> Dict[str, Dict[str, Any]]:
+    out: Dict[str, Dict[str, Any]] = {}
+    try:
+        if df is None or getattr(df, "empty", True):
+            return out
+    except Exception:
+        return out
+
+    code_col = _pick_col_contains(df, ["基金代码", "代码"])
+    name_col = _pick_col_contains(df, ["基金简称", "基金名称", "名称"])
+    nav_col = _pick_col_contains(df, ["最新价", "现价", "最新", "收盘价", "单位净值", "最新净值"])
+    pct_col = _pick_col_contains(df, ["涨跌幅", "日增长率", "涨幅"])
+    if not code_col or not nav_col:
+        return out
+
+    try:
+        for _, row in df.iterrows():
+            cc = _norm_code6(str(row.get(code_col) or ""))
+            if not cc:
+                continue
+            nav = _safe_float(row.get(nav_col))
+            if nav is None:
+                continue
+            pct = _safe_float(row.get(pct_col)) if pct_col else None
+            prev_nav = None
+            if pct is not None and pct > -100:
+                try:
+                    prev_nav = float(nav) / (1.0 + float(pct) / 100.0)
+                except Exception:
+                    prev_nav = None
+            out[cc] = {
+                "name": str(row.get(name_col) or "").strip() if name_col else "",
+                "nav": float(nav),
+                "prev_nav": float(prev_nav) if prev_nav is not None else None,
+                "daily_change_pct": float(pct) if pct is not None else None,
+                "jzrq": datetime.now().strftime("%Y-%m-%d"),
+                "gztime": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "source": source,
+            }
+    except Exception:
+        return {}
+    return out
+
+
+def _fetch_etf_spot_snapshot(code: str) -> Dict[str, Any]:
+    """
+    ETF fallback quote chain:
+    1) THS ETF spot
+    2) EM ETF daily table
+    """
+    c = _norm_code6(code)
+    if not c:
+        return {}
+
+    now = time.time()
+    cache_ts = float(_ETF_SPOT_CACHE.get("ts") or 0.0)
+    data_map = _ETF_SPOT_CACHE.get("data") or {}
+    if isinstance(data_map, dict) and (now - cache_ts) <= _ETF_SPOT_TTL_SECONDS:
+        return dict(data_map.get(c) or {})
+
+    merged: Dict[str, Dict[str, Any]] = {}
+
+    try:
+        import akshare as ak  # type: ignore
+    except Exception:
+        _ETF_SPOT_CACHE["ts"] = now
+        _ETF_SPOT_CACHE["data"] = merged
+        return {}
+
+    try:
+        from backend.services.sector_flow_service import akshare_no_proxy
+    except Exception:
+        akshare_no_proxy = None
+
+    def _load_df(fn_name: str):
+        fn = getattr(ak, fn_name, None)
+        if not callable(fn):
+            return None
+        try:
+            if callable(akshare_no_proxy):
+                with akshare_no_proxy():
+                    return fn()
+            return fn()
+        except Exception:
+            return None
+
+    # THS spot first
+    try:
+        df_ths = _load_df("fund_etf_spot_ths")
+        map_ths = _build_etf_spot_map_from_df(df_ths, "ths_etf_spot")
+        merged.update(map_ths)
+    except Exception:
+        pass
+
+    # EM ETF daily as backup; do not overwrite THS spot rows.
+    try:
+        df_em = _load_df("fund_etf_fund_daily_em")
+        map_em = _build_etf_spot_map_from_df(df_em, "em_etf_daily")
+        for k, v in map_em.items():
+            merged.setdefault(k, v)
+    except Exception:
+        pass
+
+    _ETF_SPOT_CACHE["ts"] = now
+    _ETF_SPOT_CACHE["data"] = merged
+    return dict(merged.get(c) or {})
 
 
 def fetch_fund_gz(code: str, source_mode: str = "auto") -> Dict[str, Any]:
