@@ -126,7 +126,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final Set<String> _deletingPositionCodes = <String>{};
   Timer? _autoRefreshTimer;
   bool _autoRefreshInFlight = false;
-  String _quoteSourceMode = "biying";
+  String _quoteSourceMode = "auto";
 
   @override
   void initState() {
@@ -784,7 +784,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       case "settled":
         return "净值优先";
       default:
-        return "必盈优先";
+        return "智能";
     }
   }
 
@@ -796,7 +796,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       final mode =
           (saved == "estimate" || saved == "settled" || saved == "biying")
               ? saved
-              : "biying";
+              : "auto";
       if (!mounted) {
         return;
       }

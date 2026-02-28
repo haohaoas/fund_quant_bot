@@ -82,7 +82,7 @@ def _norm_quote_source_mode(mode: str) -> str:
     m = str(mode or "").strip().lower()
     if m in _QUOTE_SOURCE_MODES:
         return m
-    return "biying"
+    return "auto"
 
 
 def _norm_code6(code: str) -> str:
@@ -139,6 +139,21 @@ def _pick_first_nonempty(row: Dict[str, Any], keys: List[str]) -> Any:
     return None
 
 
+def _is_biying_eligible(code: str) -> bool:
+    """
+    Biying fd/real/time mainly covers ETF / exchange-traded funds.
+    Open-end mutual fund codes (like 017736/018463) are often unsupported (404).
+    """
+    c = _norm_code6(code)
+    if not c or not c.isdigit():
+        return False
+    etf_prefixes = (
+        "15", "16",  # SZ listed funds/ETF families
+        "50", "51", "56", "58",  # SH ETF families
+    )
+    return c.startswith(etf_prefixes)
+
+
 def _extract_biying_row(payload: Any) -> Dict[str, Any]:
     if isinstance(payload, list):
         for item in payload:
@@ -170,6 +185,8 @@ def _fetch_biying_quote(code: str) -> Dict[str, Any]:
     c = _norm_code6(code)
     if not c:
         return {"ok": False, "error": "empty code"}
+    if not _is_biying_eligible(c):
+        return {"ok": False, "error": "biying unsupported code family"}
 
     licence = str(os.getenv("BIYING_LICENCE") or os.getenv("BIYING_LICENSE") or "").strip()
     if not licence:
@@ -707,7 +724,7 @@ def _fetch_etf_spot_snapshot(code: str) -> Dict[str, Any]:
     return dict(merged.get(c) or {})
 
 
-def fetch_fund_gz(code: str, source_mode: str = "biying") -> Dict[str, Any]:
+def fetch_fund_gz(code: str, source_mode: str = "auto") -> Dict[str, Any]:
     """Fetch realtime/estimated fund info from Eastmoney fundgz."""
     c = str(code).strip()
     if not c:
@@ -910,7 +927,7 @@ def _round_or_none(x: Optional[float], nd: int = 2) -> Optional[float]:
         return None
 
 
-def enrich_position(pos: Dict[str, Any], quote_source: str = "biying") -> Dict[str, Any]:
+def enrich_position(pos: Dict[str, Any], quote_source: str = "auto") -> Dict[str, Any]:
     code = str(pos.get("code") or "").strip()
     shares = _safe_float(pos.get("shares")) or 0.0
     cost = _safe_float(pos.get("cost")) or 0.0
@@ -1240,7 +1257,7 @@ def set_account_cash(cash: float, account_id: Optional[int] = None, user_id: Opt
         raise ValueError(f"account not found: {aid}")
 
 
-def list_positions(account_id: Optional[int] = None, quote_source: str = "biying") -> List[Dict[str, Any]]:
+def list_positions(account_id: Optional[int] = None, quote_source: str = "auto") -> List[Dict[str, Any]]:
     aid = _norm_account_id(account_id)
     with get_conn() as conn:
         rows = conn.execute(
@@ -1258,7 +1275,7 @@ def list_positions(account_id: Optional[int] = None, quote_source: str = "biying
 def get_position(
     code: str,
     account_id: Optional[int] = None,
-    quote_source: str = "biying",
+    quote_source: str = "auto",
 ) -> Optional[Dict[str, Any]]:
     aid = _norm_account_id(account_id)
     with get_conn() as conn:
