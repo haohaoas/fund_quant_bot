@@ -44,6 +44,8 @@ init_db()
 
 _FUNDGZ_TTL_SECONDS = 30
 _FUNDGZ_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_SETTLED_NAV_TTL_SECONDS = 900
+_SETTLED_NAV_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 DEFAULT_ACCOUNT_ID = 1
 
 
@@ -130,6 +132,92 @@ def _is_nav_settled(gz: Dict[str, Any]) -> bool:
 
     expected = _latest_expected_settled_date(datetime.now())
     return jzrq_date >= expected
+
+
+def _fetch_settled_nav_snapshot(code: str, jzrq: str) -> Dict[str, Any]:
+    """
+    对于“已结算净值”的基金，额外读取历史净值，拿到真实的 prev_nav 与日涨幅。
+    返回:
+      {
+        "nav": float,
+        "prev_nav": float|None,
+        "daily_change_pct": float|None,
+        "jzrq": "YYYY-MM-DD",
+      }
+    """
+    c = str(code or "").strip()
+    if not c:
+        return {}
+    target = str(jzrq or "").strip()
+    key = f"{c}:{target or '-'}"
+    now = time.time()
+    cached = _SETTLED_NAV_CACHE.get(key)
+    if cached and (now - cached[0]) <= _SETTLED_NAV_TTL_SECONDS:
+        return cached[1]
+
+    out: Dict[str, Any] = {}
+    try:
+        from data import get_fund_history  # 延迟导入，避免启动时重依赖
+
+        df = get_fund_history(c, lookback_days=120)
+        if df is None or getattr(df, "empty", True):
+            _SETTLED_NAV_CACHE[key] = (now, out)
+            return out
+        if "date" not in df.columns or "close" not in df.columns:
+            _SETTLED_NAV_CACHE[key] = (now, out)
+            return out
+
+        series: List[Tuple[Any, float]] = []
+        for _, row in df.iterrows():
+            raw_d = row.get("date")
+            raw_v = row.get("close")
+            d = None
+            if hasattr(raw_d, "date"):
+                try:
+                    d = raw_d.date()
+                except Exception:
+                    d = None
+            if d is None:
+                d = _parse_local_date(raw_d)
+            v = _safe_float(raw_v)
+            if d is None or v is None:
+                continue
+            series.append((d, float(v)))
+
+        if not series:
+            _SETTLED_NAV_CACHE[key] = (now, out)
+            return out
+        series.sort(key=lambda x: x[0])
+
+        target_d = _parse_local_date(target)
+        idx = len(series) - 1
+        if target_d is not None:
+            found = False
+            for i in range(len(series) - 1, -1, -1):
+                if series[i][0] <= target_d:
+                    idx = i
+                    found = True
+                    break
+            if not found:
+                idx = 0
+
+        nav_date, nav_val = series[idx]
+        prev_val = series[idx - 1][1] if idx > 0 else None
+        pct = None
+        if prev_val is not None and prev_val != 0:
+            pct = (float(nav_val) - float(prev_val)) / float(prev_val) * 100.0
+
+        out = {
+            "nav": float(nav_val),
+            "prev_nav": float(prev_val) if prev_val is not None else None,
+            "daily_change_pct": float(pct) if pct is not None else None,
+            "jzrq": str(nav_date),
+        }
+    except Exception:
+        out = {}
+
+    _SETTLED_NAV_CACHE[key] = (now, out)
+    return out
 
 
 def fetch_fund_gz(code: str) -> Dict[str, Any]:
@@ -305,6 +393,19 @@ def enrich_position(pos: Dict[str, Any]) -> Dict[str, Any]:
     daily_profit = (shares * (nav - prev_nav)) if (nav is not None and prev_nav is not None) else None
     jzrq = str(gz.get("jzrq") or "").strip() if gz.get("ok") else ""
     nav_settled = _is_nav_settled(gz) if gz.get("ok") else False
+
+    # 若净值已结算，优先用历史净值回填真实日涨幅（避免继续显示估值涨幅）。
+    if nav_settled and code:
+        snap = _fetch_settled_nav_snapshot(code, jzrq)
+        if snap:
+            nav = _safe_float(snap.get("nav")) or nav
+            prev_nav = _safe_float(snap.get("prev_nav")) if snap.get("prev_nav") is not None else prev_nav
+            daily_change_pct = _safe_float(snap.get("daily_change_pct")) if snap.get("daily_change_pct") is not None else daily_change_pct
+            jzrq = str(snap.get("jzrq") or jzrq).strip()
+            market_value = (shares * nav) if (nav is not None) else market_value
+            holding_profit = (shares * (nav - cost)) if (nav is not None) else holding_profit
+            holding_profit_pct = ((nav - cost) / cost * 100.0) if (nav is not None and cost > 0) else holding_profit_pct
+            daily_profit = (shares * (nav - prev_nav)) if (nav is not None and prev_nav is not None) else daily_profit
 
     sector_label = _get_sector_label(code, name)
     sector_pct = None
