@@ -9,7 +9,8 @@
 说明：
 - 本文件不依赖 `backend/sector.py`。
 - 板块默认使用本地静态映射 FUND_TO_SECTOR；如果未配置则为“未知板块”。
-- 基金名称/净值/涨幅使用 Eastmoney fundgz（1234567）接口。
+- 基金名称/净值/涨幅默认使用 Eastmoney fundgz（1234567）接口；
+  夜间优先切换到真实净值快照（akshare 开放式基金净值）并带多级兜底。
 """
 
 from typing import Dict, Any, List, Optional, Tuple
@@ -46,6 +47,8 @@ _FUNDGZ_TTL_SECONDS = 30
 _FUNDGZ_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _SETTLED_NAV_TTL_SECONDS = 900
 _SETTLED_NAV_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_OPEN_FUND_DAILY_TTL_SECONDS = 600
+_OPEN_FUND_DAILY_CACHE: Dict[str, Any] = {"ts": 0.0, "data": {}}
 DEFAULT_ACCOUNT_ID = 1
 
 
@@ -67,6 +70,39 @@ def _safe_float(x: Any) -> Optional[float]:
         return float(s)
     except Exception:
         return None
+
+
+def _norm_code6(code: str) -> str:
+    digits = "".join(ch for ch in str(code or "").strip() if ch.isdigit())
+    if len(digits) >= 6:
+        return digits[-6:]
+    return str(code or "").strip()
+
+
+def _pick_col_contains(df: Any, keys: List[str]) -> Optional[str]:
+    cols_obj = getattr(df, "columns", None)
+    cols = list(cols_obj) if cols_obj is not None else []
+    for c in cols:
+        text = str(c)
+        for k in keys:
+            if k in text:
+                return text
+    return None
+
+
+def _pick_row_value(row: Any, keys: List[str]) -> Any:
+    for k in keys:
+        try:
+            v = row.get(k)
+        except Exception:
+            v = None
+        if v is None:
+            continue
+        s = str(v).strip()
+        if s in ("", "--", "-", "None", "nan", "NaN"):
+            continue
+        return v
+    return None
 
 
 def _parse_jsonp_obj(text: str) -> Dict[str, Any]:
@@ -156,6 +192,37 @@ def _fetch_settled_nav_snapshot(code: str, jzrq: str) -> Dict[str, Any]:
         return cached[1]
 
     out: Dict[str, Any] = {}
+    # 1) First try open-fund daily snapshot: typically refreshed after close.
+    try:
+        daily = _fetch_open_fund_daily_snapshot(c)
+        d_nav = _safe_float((daily or {}).get("nav"))
+        d_prev = _safe_float((daily or {}).get("prev_nav"))
+        d_pct = _safe_float((daily or {}).get("daily_change_pct"))
+        d_jzrq = str((daily or {}).get("jzrq") or "").strip()
+
+        if d_nav is not None:
+            if d_prev is None and d_pct is not None and d_pct > -100:
+                try:
+                    d_prev = d_nav / (1.0 + d_pct / 100.0)
+                except Exception:
+                    d_prev = None
+            if d_pct is None and d_prev not in (None, 0):
+                try:
+                    d_pct = (float(d_nav) - float(d_prev)) / float(d_prev) * 100.0
+                except Exception:
+                    d_pct = None
+            out = {
+                "nav": float(d_nav),
+                "prev_nav": float(d_prev) if d_prev is not None else None,
+                "daily_change_pct": float(d_pct) if d_pct is not None else None,
+                "jzrq": d_jzrq or target,
+            }
+            _SETTLED_NAV_CACHE[key] = (now, out)
+            return out
+    except Exception:
+        pass
+
+    # 2) Fallback to history series (stable but less timely).
     try:
         from data import get_fund_history  # 延迟导入，避免启动时重依赖
 
@@ -220,6 +287,146 @@ def _fetch_settled_nav_snapshot(code: str, jzrq: str) -> Dict[str, Any]:
     return out
 
 
+def _fetch_open_fund_daily_snapshot(code: str) -> Dict[str, Any]:
+    """
+    Fetch settled NAV snapshot from akshare open-fund daily table.
+    Returns:
+      {"nav": float|None, "prev_nav": float|None, "daily_change_pct": float|None, "jzrq": str, "name": str}
+    """
+    c = _norm_code6(code)
+    if not c:
+        return {}
+
+    now = time.time()
+    cache_ts = float(_OPEN_FUND_DAILY_CACHE.get("ts") or 0.0)
+    data_map = _OPEN_FUND_DAILY_CACHE.get("data") or {}
+    if isinstance(data_map, dict) and (now - cache_ts) <= _OPEN_FUND_DAILY_TTL_SECONDS:
+        return dict(data_map.get(c) or {})
+
+    latest_map: Dict[str, Dict[str, Any]] = {}
+    try:
+        import akshare as ak  # type: ignore
+    except Exception:
+        _OPEN_FUND_DAILY_CACHE["ts"] = now
+        _OPEN_FUND_DAILY_CACHE["data"] = latest_map
+        return {}
+
+    try:
+        from backend.services.sector_flow_service import akshare_no_proxy
+    except Exception:
+        akshare_no_proxy = None
+
+    try:
+        fn = getattr(ak, "fund_open_fund_daily_em", None)
+        if not callable(fn):
+            _OPEN_FUND_DAILY_CACHE["ts"] = now
+            _OPEN_FUND_DAILY_CACHE["data"] = latest_map
+            return {}
+        if callable(akshare_no_proxy):
+            with akshare_no_proxy():
+                df = fn()
+        else:
+            df = fn()
+    except Exception:
+        df = None
+
+    try:
+        if df is None or getattr(df, "empty", True):
+            _OPEN_FUND_DAILY_CACHE["ts"] = now
+            _OPEN_FUND_DAILY_CACHE["data"] = latest_map
+            return {}
+    except Exception:
+        _OPEN_FUND_DAILY_CACHE["ts"] = now
+        _OPEN_FUND_DAILY_CACHE["data"] = latest_map
+        return {}
+
+    code_col = _pick_col_contains(df, ["基金代码", "代码"])
+    name_col = _pick_col_contains(df, ["基金简称", "基金名称", "名称"])
+    nav_col = _pick_col_contains(df, ["单位净值", "最新净值", "净值"])
+    pct_col = _pick_col_contains(df, ["日增长率", "日涨跌幅", "涨跌幅"])
+    date_col = _pick_col_contains(df, ["净值日期", "日期", "更新"])
+
+    if not code_col or not nav_col:
+        _OPEN_FUND_DAILY_CACHE["ts"] = now
+        _OPEN_FUND_DAILY_CACHE["data"] = latest_map
+        return {}
+
+    try:
+        for _, row in df.iterrows():
+            code_raw = row.get(code_col)
+            cc = _norm_code6(str(code_raw or ""))
+            if not cc:
+                continue
+            nav = _safe_float(row.get(nav_col))
+            if nav is None:
+                continue
+
+            pct = _safe_float(row.get(pct_col)) if pct_col else None
+            prev_nav = None
+            if pct is not None and pct > -100:
+                try:
+                    prev_nav = float(nav) / (1.0 + float(pct) / 100.0)
+                except Exception:
+                    prev_nav = None
+
+            jzrq = ""
+            if date_col:
+                jzrq = str(row.get(date_col) or "").strip()
+            if not jzrq:
+                jzrq = datetime.now().strftime("%Y-%m-%d")
+
+            latest_map[cc] = {
+                "nav": float(nav),
+                "prev_nav": float(prev_nav) if prev_nav is not None else None,
+                "daily_change_pct": float(pct) if pct is not None else None,
+                "jzrq": jzrq,
+                "name": str(row.get(name_col) or "").strip() if name_col else "",
+            }
+    except Exception:
+        latest_map = {}
+
+    _OPEN_FUND_DAILY_CACHE["ts"] = now
+    _OPEN_FUND_DAILY_CACHE["data"] = latest_map
+    return dict(latest_map.get(c) or {})
+
+
+def _fallback_quote_from_settled_nav(code: str) -> Dict[str, Any]:
+    c = str(code or "").strip()
+    if not c:
+        return {"ok": False, "error": "empty code"}
+    snap = _fetch_settled_nav_snapshot(c, "")
+    nav = _safe_float(snap.get("nav")) if snap else None
+    if nav is None:
+        return {"ok": False, "error": "settled snapshot unavailable"}
+    prev_nav = _safe_float(snap.get("prev_nav")) if snap.get("prev_nav") is not None else None
+    pct = _safe_float(snap.get("daily_change_pct")) if snap.get("daily_change_pct") is not None else None
+    if pct is None and prev_nav not in (None, 0):
+        try:
+            pct = (float(nav) - float(prev_nav)) / float(prev_nav) * 100.0
+        except Exception:
+            pct = None
+
+    name = ""
+    try:
+        from data import get_fund_name
+
+        name = str(get_fund_name(c) or "").strip()
+    except Exception:
+        name = ""
+
+    return {
+        "ok": True,
+        "code": c,
+        "name": name,
+        "nav": float(nav),
+        "prev_nav": float(prev_nav) if prev_nav is not None else None,
+        "daily_change_pct": float(pct) if pct is not None else None,
+        "jzrq": str(snap.get("jzrq") or "").strip(),
+        "gztime": "",
+        "source": "settled_fallback",
+    }
+
+
 def fetch_fund_gz(code: str) -> Dict[str, Any]:
     """Fetch realtime/estimated fund info from Eastmoney fundgz."""
     c = str(code).strip()
@@ -254,6 +461,10 @@ def fetch_fund_gz(code: str) -> Dict[str, Any]:
     try:
         resp = sess.get(url, headers=headers, timeout=(5, 20), proxies={})
         if resp.status_code != 200:
+            fb = _fallback_quote_from_settled_nav(c)
+            if fb.get("ok"):
+                _FUNDGZ_CACHE[c] = (now, fb)
+                return fb
             out = {"ok": False, "error": f"HTTP {resp.status_code}"}
             _FUNDGZ_CACHE[c] = (now, out)
             return out
@@ -261,6 +472,10 @@ def fetch_fund_gz(code: str) -> Dict[str, Any]:
         resp.encoding = "utf-8"
         obj = _parse_jsonp_obj(resp.text)
         if not obj:
+            fb = _fallback_quote_from_settled_nav(c)
+            if fb.get("ok"):
+                _FUNDGZ_CACHE[c] = (now, fb)
+                return fb
             out = {"ok": False, "error": "empty json"}
             _FUNDGZ_CACHE[c] = (now, out)
             return out
@@ -285,11 +500,36 @@ def fetch_fund_gz(code: str) -> Dict[str, Any]:
             "daily_change_pct": gszzl,
             "jzrq": str(obj.get("jzrq") or "").strip(),
             "gztime": str(obj.get("gztime") or "").strip(),
+            "source": "fundgz",
         }
+
+        # Nightly/settled phase: replace estimate with settled NAV snapshot when available.
+        try:
+            if _is_nav_settled(out):
+                snap = _fetch_settled_nav_snapshot(c, str(out.get("jzrq") or ""))
+                if snap:
+                    snap_nav = _safe_float(snap.get("nav"))
+                    snap_prev = _safe_float(snap.get("prev_nav")) if snap.get("prev_nav") is not None else None
+                    snap_pct = _safe_float(snap.get("daily_change_pct")) if snap.get("daily_change_pct") is not None else None
+                    if snap_nav is not None:
+                        out["nav"] = snap_nav
+                    if snap_prev is not None:
+                        out["prev_nav"] = snap_prev
+                    if snap_pct is not None:
+                        out["daily_change_pct"] = snap_pct
+                    out["jzrq"] = str(snap.get("jzrq") or out.get("jzrq") or "").strip()
+                    out["source"] = "settled_nav"
+        except Exception:
+            pass
+
         _FUNDGZ_CACHE[c] = (now, out)
         return out
 
     except Exception as e:
+        fb = _fallback_quote_from_settled_nav(c)
+        if fb.get("ok"):
+            _FUNDGZ_CACHE[c] = (now, fb)
+            return fb
         out = {"ok": False, "error": f"{type(e).__name__}: {e}"}
         _FUNDGZ_CACHE[c] = (now, out)
         return out
