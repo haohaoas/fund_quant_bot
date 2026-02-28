@@ -30,6 +30,13 @@ def _norm_code(code: str) -> str:
     return c
 
 
+def _norm_quote_source_mode(mode: str) -> str:
+    m = str(mode or "").strip().lower()
+    if m in {"auto", "estimate", "settled"}:
+        return m
+    return "auto"
+
+
 def _item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "id": int(row["id"]),
@@ -330,8 +337,9 @@ def _match_sector_pct_from_fallback(
     return best_pct
 
 
-def list_watchlist(user_id: int) -> List[Dict[str, Any]]:
+def list_watchlist(user_id: int, quote_source: str = "auto") -> List[Dict[str, Any]]:
     uid = _norm_user_id(user_id)
+    source_mode = _norm_quote_source_mode(quote_source)
     with get_conn() as conn:
         rows = conn.execute(
             """
@@ -386,7 +394,7 @@ def list_watchlist(user_id: int) -> List[Dict[str, Any]]:
         # First priority: reuse the same quote channel as holdings page.
         if callable(fetch_fund_gz):
             try:
-                gz = fetch_fund_gz(code) or {}
+                gz = fetch_fund_gz(code, source_mode=source_mode) or {}
             except Exception:
                 gz = {}
             if gz.get("ok"):
@@ -403,7 +411,7 @@ def list_watchlist(user_id: int) -> List[Dict[str, Any]]:
                 except Exception:
                     item["latest_pct"] = None
                 item["latest_time"] = str(gz.get("gztime") or gz.get("jzrq") or "")
-                item["latest_source"] = "fundgz"
+                item["latest_source"] = str(gz.get("source") or "fundgz")
 
         need_quote_fallback = not (
             item["latest_price"] is not None
@@ -541,8 +549,9 @@ def remove_watchlist(user_id: int, code: str) -> bool:
     return int(cur.rowcount or 0) > 0
 
 
-def analyze_fund(code: str, name: str = "") -> Dict[str, Any]:
+def analyze_fund(code: str, name: str = "", quote_source: str = "auto") -> Dict[str, Any]:
     c = _norm_code(code)
+    source_mode = _norm_quote_source_mode(quote_source)
     display_name = str(name or "").strip()
 
     # Lazy imports to avoid heavy init at module import time.
@@ -579,7 +588,7 @@ def analyze_fund(code: str, name: str = "") -> Dict[str, Any]:
 
     if callable(fetch_fund_gz):
         try:
-            gz = fetch_fund_gz(c) or {}
+            gz = fetch_fund_gz(c, source_mode=source_mode) or {}
         except Exception:
             gz = {}
     else:
@@ -592,7 +601,7 @@ def analyze_fund(code: str, name: str = "") -> Dict[str, Any]:
             "price": gz.get("nav"),
             "pct": gz.get("daily_change_pct"),
             "time": gz.get("gztime") or gz.get("jzrq"),
-            "source": "fundgz",
+            "source": str(gz.get("source") or "fundgz"),
         }
         price = latest.get("price")
         pct = latest.get("pct")

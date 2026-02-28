@@ -50,12 +50,15 @@ _SETTLED_NAV_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _OPEN_FUND_DAILY_TTL_SECONDS = 600
 _OPEN_FUND_DAILY_CACHE: Dict[str, Any] = {"ts": 0.0, "data": {}}
 DEFAULT_ACCOUNT_ID = 1
+_QUOTE_SOURCE_MODES = {"auto", "estimate", "settled"}
 
 
 def clear_fund_gz_cache(code: Optional[str] = None) -> None:
     c = str(code or "").strip()
     if c:
-        _FUNDGZ_CACHE.pop(c, None)
+        keys = [k for k in _FUNDGZ_CACHE.keys() if str(k).startswith(f"{c}|")]
+        for k in keys:
+            _FUNDGZ_CACHE.pop(k, None)
         return
     _FUNDGZ_CACHE.clear()
 
@@ -70,6 +73,13 @@ def _safe_float(x: Any) -> Optional[float]:
         return float(s)
     except Exception:
         return None
+
+
+def _norm_quote_source_mode(mode: str) -> str:
+    m = str(mode or "").strip().lower()
+    if m in _QUOTE_SOURCE_MODES:
+        return m
+    return "auto"
 
 
 def _norm_code6(code: str) -> str:
@@ -427,14 +437,21 @@ def _fallback_quote_from_settled_nav(code: str) -> Dict[str, Any]:
     }
 
 
-def fetch_fund_gz(code: str) -> Dict[str, Any]:
+def fetch_fund_gz(code: str, source_mode: str = "auto") -> Dict[str, Any]:
     """Fetch realtime/estimated fund info from Eastmoney fundgz."""
     c = str(code).strip()
     if not c:
         return {"ok": False, "error": "empty code"}
+    mode = _norm_quote_source_mode(source_mode)
+
+    if mode == "settled":
+        settled = _fallback_quote_from_settled_nav(c)
+        if settled.get("ok"):
+            return settled
 
     now = time.time()
-    cached = _FUNDGZ_CACHE.get(c)
+    cache_key = f"{c}|{mode}"
+    cached = _FUNDGZ_CACHE.get(cache_key)
     if cached and (now - cached[0]) <= _FUNDGZ_TTL_SECONDS:
         return cached[1]
 
@@ -463,10 +480,10 @@ def fetch_fund_gz(code: str) -> Dict[str, Any]:
         if resp.status_code != 200:
             fb = _fallback_quote_from_settled_nav(c)
             if fb.get("ok"):
-                _FUNDGZ_CACHE[c] = (now, fb)
+                _FUNDGZ_CACHE[cache_key] = (now, fb)
                 return fb
             out = {"ok": False, "error": f"HTTP {resp.status_code}"}
-            _FUNDGZ_CACHE[c] = (now, out)
+            _FUNDGZ_CACHE[cache_key] = (now, out)
             return out
 
         resp.encoding = "utf-8"
@@ -474,10 +491,10 @@ def fetch_fund_gz(code: str) -> Dict[str, Any]:
         if not obj:
             fb = _fallback_quote_from_settled_nav(c)
             if fb.get("ok"):
-                _FUNDGZ_CACHE[c] = (now, fb)
+                _FUNDGZ_CACHE[cache_key] = (now, fb)
                 return fb
             out = {"ok": False, "error": "empty json"}
-            _FUNDGZ_CACHE[c] = (now, out)
+            _FUNDGZ_CACHE[cache_key] = (now, out)
             return out
 
         def _sf(v: Any) -> Optional[float]:
@@ -505,7 +522,7 @@ def fetch_fund_gz(code: str) -> Dict[str, Any]:
 
         # Nightly/settled phase: replace estimate with settled NAV snapshot when available.
         try:
-            if _is_nav_settled(out):
+            if mode != "estimate" and _is_nav_settled(out):
                 snap = _fetch_settled_nav_snapshot(c, str(out.get("jzrq") or ""))
                 if snap:
                     snap_nav = _safe_float(snap.get("nav"))
@@ -522,16 +539,16 @@ def fetch_fund_gz(code: str) -> Dict[str, Any]:
         except Exception:
             pass
 
-        _FUNDGZ_CACHE[c] = (now, out)
+        _FUNDGZ_CACHE[cache_key] = (now, out)
         return out
 
     except Exception as e:
         fb = _fallback_quote_from_settled_nav(c)
         if fb.get("ok"):
-            _FUNDGZ_CACHE[c] = (now, fb)
+            _FUNDGZ_CACHE[cache_key] = (now, fb)
             return fb
         out = {"ok": False, "error": f"{type(e).__name__}: {e}"}
-        _FUNDGZ_CACHE[c] = (now, out)
+        _FUNDGZ_CACHE[cache_key] = (now, out)
         return out
 
 
@@ -611,12 +628,13 @@ def _round_or_none(x: Optional[float], nd: int = 2) -> Optional[float]:
         return None
 
 
-def enrich_position(pos: Dict[str, Any]) -> Dict[str, Any]:
+def enrich_position(pos: Dict[str, Any], quote_source: str = "auto") -> Dict[str, Any]:
     code = str(pos.get("code") or "").strip()
     shares = _safe_float(pos.get("shares")) or 0.0
     cost = _safe_float(pos.get("cost")) or 0.0
+    source_mode = _norm_quote_source_mode(quote_source)
 
-    gz = fetch_fund_gz(code) if code else {"ok": False}
+    gz = fetch_fund_gz(code, source_mode=source_mode) if code else {"ok": False}
     name = str(gz.get("name") or "").strip() if gz.get("ok") else ""
 
     nav = _safe_float(gz.get("nav")) if gz.get("ok") else None
@@ -670,7 +688,7 @@ def enrich_position(pos: Dict[str, Any]) -> Dict[str, Any]:
             "market_value": _round_or_none(market_value, 2),
             "holding_profit": _round_or_none(holding_profit, 2),
             "holding_profit_pct": _round_or_none(holding_profit_pct, 2),
-            "data_source": "fundgz" if gz.get("ok") else "",
+            "data_source": str(gz.get("source") or "fundgz") if gz.get("ok") else "",
             "jzrq": jzrq,
             "nav_settled": bool(nav_settled),
             "gztime": str(gz.get("gztime") or "").strip() if gz.get("ok") else "",
@@ -932,7 +950,7 @@ def set_account_cash(cash: float, account_id: Optional[int] = None, user_id: Opt
         raise ValueError(f"account not found: {aid}")
 
 
-def list_positions(account_id: Optional[int] = None) -> List[Dict[str, Any]]:
+def list_positions(account_id: Optional[int] = None, quote_source: str = "auto") -> List[Dict[str, Any]]:
     aid = _norm_account_id(account_id)
     with get_conn() as conn:
         rows = conn.execute(
@@ -944,10 +962,14 @@ def list_positions(account_id: Optional[int] = None) -> List[Dict[str, Any]]:
             """,
             (aid,),
         ).fetchall()
-    return [enrich_position(dict(r)) for r in rows]
+    return [enrich_position(dict(r), quote_source=quote_source) for r in rows]
 
 
-def get_position(code: str, account_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+def get_position(
+    code: str,
+    account_id: Optional[int] = None,
+    quote_source: str = "auto",
+) -> Optional[Dict[str, Any]]:
     aid = _norm_account_id(account_id)
     with get_conn() as conn:
         row = conn.execute(
@@ -958,7 +980,7 @@ def get_position(code: str, account_id: Optional[int] = None) -> Optional[Dict[s
             """,
             (aid, code),
         ).fetchone()
-    return enrich_position(dict(row)) if row else None
+    return enrich_position(dict(row), quote_source=quote_source) if row else None
 
 
 def _upsert_position(code: str, shares: float, cost: float, account_id: Optional[int] = None) -> None:

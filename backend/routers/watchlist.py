@@ -17,9 +17,12 @@ class WatchlistPayload(BaseModel):
 
 
 @router.get("/api/watchlist")
-def get_watchlist(user: Dict[str, Any] = Depends(get_current_user)):
+def get_watchlist(
+    quote_source: str = "auto",
+    user: Dict[str, Any] = Depends(get_current_user),
+):
     uid = int(user["id"])
-    return {"items": ws.list_watchlist(uid)}
+    return {"items": ws.list_watchlist(uid, quote_source=quote_source)}
 
 
 @router.post("/api/watchlist")
@@ -48,11 +51,16 @@ def delete_watchlist(code: str, user: Dict[str, Any] = Depends(get_current_user)
 def analyze_watchlist_fund(
     code: str,
     name: Optional[str] = None,
+    quote_source: str = "auto",
     user: Dict[str, Any] = Depends(get_current_user),
 ):
     _ = user
     try:
-        result = ws.analyze_fund(code=code, name=name or "")
+        result = ws.analyze_fund(
+            code=code,
+            name=name or "",
+            quote_source=quote_source,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

@@ -5,6 +5,7 @@ import "package:flutter/material.dart";
 import "package:flutter/services.dart";
 import "package:image_picker/image_picker.dart";
 import "package:intl/intl.dart";
+import "package:shared_preferences/shared_preferences.dart";
 
 import "../models/account.dart";
 import "../models/market_index.dart";
@@ -87,10 +88,12 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   static const List<String> _indicators = <String>["今日", "5日", "10日"];
   static const List<String> _sectorTypes = <String>["行业资金流", "概念资金流"];
   static const List<String> _actions = <String>["BUY", "SELL", "SIP", "REDEEM"];
+  static const Duration _autoRefreshInterval = Duration(seconds: 5);
+  static const String _quoteSourcePrefKey = "quote_source_mode";
 
   final NumberFormat _numberFormat = NumberFormat("#,##0.00", "zh_CN");
 
@@ -121,11 +124,98 @@ class _HomePageState extends State<HomePage> {
   bool _loadingAccounts = false;
   bool _submittingInvestment = false;
   final Set<String> _deletingPositionCodes = <String>{};
+  Timer? _autoRefreshTimer;
+  bool _autoRefreshInFlight = false;
+  String _quoteSourceMode = "auto";
 
   @override
   void initState() {
     super.initState();
-    _reload();
+    WidgetsBinding.instance.addObserver(this);
+    unawaited(_initPage());
+    _startAutoRefresh();
+  }
+
+  Future<void> _initPage() async {
+    await _restoreQuoteSourceMode();
+    await _reload();
+  }
+
+  @override
+  void dispose() {
+    _stopAutoRefresh();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _startAutoRefresh();
+      unawaited(_resumePreRefresh());
+      return;
+    }
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      _stopAutoRefresh();
+    }
+  }
+
+  void _startAutoRefresh() {
+    _autoRefreshTimer?.cancel();
+    _autoRefreshTimer = Timer.periodic(_autoRefreshInterval, (_) {
+      unawaited(_refreshCurrentTabSilently(forceRefresh: true));
+    });
+  }
+
+  void _stopAutoRefresh() {
+    _autoRefreshTimer?.cancel();
+    _autoRefreshTimer = null;
+  }
+
+  Future<void> _resumePreRefresh() async {
+    await _loadAccounts(showLoading: false);
+    await _refreshCurrentTabSilently(forceRefresh: true);
+  }
+
+  Future<void> _refreshCurrentTabSilently({bool forceRefresh = false}) async {
+    if (!mounted || _autoRefreshInFlight) {
+      return;
+    }
+    if (_loadingPortfolio ||
+        _loadingWatchlist ||
+        _loadingSector ||
+        _loadingNews ||
+        _loadingIndices ||
+        _loadingAccounts) {
+      return;
+    }
+    _autoRefreshInFlight = true;
+    try {
+      if (_tabIndex == 0) {
+        await _loadPortfolio(
+          showLoading: false,
+          forceRefresh: forceRefresh,
+        );
+        unawaited(_loadMajorIndices(showLoading: false));
+      } else if (_tabIndex == 1) {
+        await _loadWatchlist(showLoading: false);
+      } else if (_tabIndex == 2) {
+        await _loadSectorFlow(showLoading: false);
+      } else if (_tabIndex == 3) {
+        await _loadNews(showLoading: false);
+      } else if (_tabIndex == 4) {
+        await _loadAccounts(showLoading: false);
+      } else {
+        await _loadPortfolio(
+          showLoading: false,
+          forceRefresh: forceRefresh,
+        );
+      }
+    } finally {
+      _autoRefreshInFlight = false;
+    }
   }
 
   Future<void> _reload({bool forceRefresh = false}) async {
@@ -145,6 +235,16 @@ class _HomePageState extends State<HomePage> {
       return _accounts.first.id;
     }
     return 1;
+  }
+
+  int? get _resolvedAccountId {
+    if (_selectedAccountId != null) {
+      return _selectedAccountId;
+    }
+    if (_accounts.isNotEmpty) {
+      return _accounts.first.id;
+    }
+    return null;
   }
 
   AppAccount? get _activeAccount {
@@ -177,11 +277,13 @@ class _HomePageState extends State<HomePage> {
     return null;
   }
 
-  Future<void> _loadAccounts() async {
-    setState(() {
-      _loadingAccounts = true;
-      _accountsError = null;
-    });
+  Future<void> _loadAccounts({bool showLoading = true}) async {
+    if (showLoading) {
+      setState(() {
+        _loadingAccounts = true;
+        _accountsError = null;
+      });
+    }
 
     try {
       final accounts = await widget.apiClient.fetchAccounts();
@@ -203,16 +305,19 @@ class _HomePageState extends State<HomePage> {
       setState(() {
         _accounts = accounts;
         _selectedAccountId = selectedId;
+        _accountsError = null;
       });
     } catch (error) {
       if (!mounted) {
         return;
       }
-      setState(() {
-        _accountsError = error.toString();
-      });
+      if (showLoading || _accounts.isEmpty) {
+        setState(() {
+          _accountsError = error.toString();
+        });
+      }
     } finally {
-      if (mounted) {
+      if (mounted && showLoading) {
         setState(() {
           _loadingAccounts = false;
         });
@@ -220,32 +325,41 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _loadPortfolio({bool forceRefresh = false}) async {
-    setState(() {
-      _loadingPortfolio = true;
-      _portfolioError = null;
-    });
+  Future<void> _loadPortfolio({
+    bool forceRefresh = false,
+    bool showLoading = true,
+  }) async {
+    if (showLoading) {
+      setState(() {
+        _loadingPortfolio = true;
+        _portfolioError = null;
+      });
+    }
 
     try {
       final portfolio = await widget.apiClient.fetchPortfolio(
         forceRefresh: forceRefresh,
-        accountId: _activeAccountId,
+        accountId: _resolvedAccountId,
+        quoteSource: _quoteSourceMode,
       );
       if (!mounted) {
         return;
       }
       setState(() {
         _portfolio = portfolio;
+        _portfolioError = null;
       });
     } catch (error) {
       if (!mounted) {
         return;
       }
-      setState(() {
-        _portfolioError = error.toString();
-      });
+      if (showLoading || _portfolio == null) {
+        setState(() {
+          _portfolioError = error.toString();
+        });
+      }
     } finally {
-      if (mounted) {
+      if (mounted && showLoading) {
         setState(() {
           _loadingPortfolio = false;
         });
@@ -253,29 +367,36 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _loadWatchlist() async {
-    setState(() {
-      _loadingWatchlist = true;
-      _watchlistError = null;
-    });
+  Future<void> _loadWatchlist({bool showLoading = true}) async {
+    if (showLoading) {
+      setState(() {
+        _loadingWatchlist = true;
+        _watchlistError = null;
+      });
+    }
 
     try {
-      final watchlist = await widget.apiClient.fetchWatchlist();
+      final watchlist = await widget.apiClient.fetchWatchlist(
+        quoteSource: _quoteSourceMode,
+      );
       if (!mounted) {
         return;
       }
       setState(() {
         _watchlist = watchlist;
+        _watchlistError = null;
       });
     } catch (error) {
       if (!mounted) {
         return;
       }
-      setState(() {
-        _watchlistError = error.toString();
-      });
+      if (showLoading || _watchlist.isEmpty) {
+        setState(() {
+          _watchlistError = error.toString();
+        });
+      }
     } finally {
-      if (mounted) {
+      if (mounted && showLoading) {
         setState(() {
           _loadingWatchlist = false;
         });
@@ -283,11 +404,13 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _loadSectorFlow() async {
-    setState(() {
-      _loadingSector = true;
-      _sectorError = null;
-    });
+  Future<void> _loadSectorFlow({bool showLoading = true}) async {
+    if (showLoading) {
+      setState(() {
+        _loadingSector = true;
+        _sectorError = null;
+      });
+    }
 
     try {
       final flow = await widget.apiClient.fetchSectorFlow(
@@ -300,16 +423,19 @@ class _HomePageState extends State<HomePage> {
       }
       setState(() {
         _sectorFlow = flow;
+        _sectorError = null;
       });
     } catch (error) {
       if (!mounted) {
         return;
       }
-      setState(() {
-        _sectorError = error.toString();
-      });
+      if (showLoading || _sectorFlow == null) {
+        setState(() {
+          _sectorError = error.toString();
+        });
+      }
     } finally {
-      if (mounted) {
+      if (mounted && showLoading) {
         setState(() {
           _loadingSector = false;
         });
@@ -317,11 +443,13 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _loadMajorIndices() async {
-    setState(() {
-      _loadingIndices = true;
-      _indicesError = null;
-    });
+  Future<void> _loadMajorIndices({bool showLoading = true}) async {
+    if (showLoading) {
+      setState(() {
+        _loadingIndices = true;
+        _indicesError = null;
+      });
+    }
 
     try {
       final quotes = await widget.apiClient.fetchMajorIndices();
@@ -330,16 +458,19 @@ class _HomePageState extends State<HomePage> {
       }
       setState(() {
         _majorIndices = quotes;
+        _indicesError = null;
       });
     } catch (error) {
       if (!mounted) {
         return;
       }
-      setState(() {
-        _indicesError = error.toString();
-      });
+      if (showLoading || _majorIndices.isEmpty) {
+        setState(() {
+          _indicesError = error.toString();
+        });
+      }
     } finally {
-      if (mounted) {
+      if (mounted && showLoading) {
         setState(() {
           _loadingIndices = false;
         });
@@ -347,11 +478,13 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _loadNews() async {
-    setState(() {
-      _loadingNews = true;
-      _newsError = null;
-    });
+  Future<void> _loadNews({bool showLoading = true}) async {
+    if (showLoading) {
+      setState(() {
+        _loadingNews = true;
+        _newsError = null;
+      });
+    }
 
     try {
       final data = await widget.apiClient.fetchNewsList(limit: 60);
@@ -360,16 +493,19 @@ class _HomePageState extends State<HomePage> {
       }
       setState(() {
         _newsList = data;
+        _newsError = null;
       });
     } catch (error) {
       if (!mounted) {
         return;
       }
-      setState(() {
-        _newsError = error.toString();
-      });
+      if (showLoading || _newsList == null) {
+        setState(() {
+          _newsError = error.toString();
+        });
+      }
     } finally {
-      if (mounted) {
+      if (mounted && showLoading) {
         setState(() {
           _loadingNews = false;
         });
@@ -637,6 +773,117 @@ class _HomePageState extends State<HomePage> {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text("$title 暂未开放")));
+  }
+
+  String _quoteSourceLabel(String mode) {
+    switch (mode) {
+      case "estimate":
+        return "估值优先";
+      case "settled":
+        return "净值优先";
+      default:
+        return "智能";
+    }
+  }
+
+  Future<void> _restoreQuoteSourceMode() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved =
+          (prefs.getString(_quoteSourcePrefKey) ?? "").trim().toLowerCase();
+      final mode = (saved == "estimate" || saved == "settled") ? saved : "auto";
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _quoteSourceMode = mode;
+      });
+    } catch (_) {
+      // ignore local read errors and keep default mode.
+    }
+  }
+
+  Future<void> _persistQuoteSourceMode(String mode) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_quoteSourcePrefKey, mode);
+    } catch (_) {
+      // ignore local write errors
+    }
+  }
+
+  Future<void> _onSwitchQuoteSourcePressed() async {
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      builder: (sheetContext) {
+        Widget option({
+          required String mode,
+          required String title,
+          required String subtitle,
+        }) {
+          final active = _quoteSourceMode == mode;
+          return ListTile(
+            title: Text(title),
+            subtitle: Text(subtitle),
+            trailing: Icon(
+              active ? Icons.check_circle : Icons.radio_button_unchecked,
+              color: active ? const Color(0xFF2E5ED7) : const Color(0xFF99A1B2),
+            ),
+            onTap: () => Navigator.of(sheetContext).pop(mode),
+          );
+        }
+
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 8),
+              const Text(
+                "切换数据源",
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 6),
+              option(
+                mode: "auto",
+                title: "智能",
+                subtitle: "盘中估值，收盘后自动切真实净值",
+              ),
+              option(
+                mode: "estimate",
+                title: "估值优先",
+                subtitle: "优先 fundgz 估值，更新快",
+              ),
+              option(
+                mode: "settled",
+                title: "净值优先",
+                subtitle: "优先已结算净值，适合晚间查看",
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (selected == null || selected == _quoteSourceMode) {
+      return;
+    }
+
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _quoteSourceMode = selected;
+    });
+    await _persistQuoteSourceMode(selected);
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(
+        SnackBar(content: Text("已切换：${_quoteSourceLabel(selected)}")));
+    await _reload(forceRefresh: true);
   }
 
   Future<void> _openAccountInfoPage() async {
@@ -2082,6 +2329,7 @@ class _HomePageState extends State<HomePage> {
                             apiClient: widget.apiClient,
                             code: item.code,
                             name: analysisName,
+                            quoteSource: _quoteSourceMode,
                           ),
                         ),
                       );
@@ -2399,6 +2647,12 @@ class _HomePageState extends State<HomePage> {
               icon: Icons.tune_rounded,
               title: "显示设置",
               onTap: () => _showFeatureHint("显示设置"),
+            ),
+            _buildMeRow(
+              icon: Icons.sync_alt_rounded,
+              title: "数据源切换",
+              value: _quoteSourceLabel(_quoteSourceMode),
+              onTap: () => unawaited(_onSwitchQuoteSourcePressed()),
               showDivider: false,
             ),
           ],
@@ -2512,6 +2766,7 @@ class _HomePageState extends State<HomePage> {
                     setState(() {
                       _tabIndex = index;
                     });
+                    unawaited(_refreshCurrentTabSilently());
                   },
                   items: const [
                     BottomNavigationBarItem(
@@ -2555,11 +2810,13 @@ class _FundAnalysisPage extends StatefulWidget {
     required this.apiClient,
     required this.code,
     required this.name,
+    required this.quoteSource,
   });
 
   final ApiClient apiClient;
   final String code;
   final String name;
+  final String quoteSource;
 
   @override
   State<_FundAnalysisPage> createState() => _FundAnalysisPageState();
@@ -2585,6 +2842,7 @@ class _FundAnalysisPageState extends State<_FundAnalysisPage> {
       final result = await widget.apiClient.analyzeWatchFund(
         code: widget.code,
         name: widget.name,
+        quoteSource: widget.quoteSource,
       );
       if (!mounted) {
         return;

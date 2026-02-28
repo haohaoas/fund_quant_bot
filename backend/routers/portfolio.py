@@ -36,6 +36,7 @@ class SectorOverrideIn(BaseModel):
 def portfolio(
     force_refresh: bool = False,
     account_id: Optional[int] = None,
+    quote_source: str = "auto",
     user: Dict[str, Any] = Depends(get_current_user),
 ):
     uid = int(user["id"])
@@ -48,7 +49,10 @@ def portfolio(
         clear_fn = getattr(ps, "clear_fund_gz_cache", None)
         if callable(clear_fn):
             clear_fn()
-    classic_positions = ps.list_positions(account_id=aid)
+    classic_positions = ps.list_positions(
+        account_id=aid,
+        quote_source=quote_source,
+    )
 
     cashflow_fn = getattr(ps, "get_cashflow_summary", None)
     if callable(cashflow_fn):

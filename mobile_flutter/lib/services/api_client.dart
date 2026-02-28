@@ -88,6 +88,14 @@ class ApiClient {
 
   String? get authToken => _authToken;
 
+  String _normalizeQuoteSource(String? value) {
+    final mode = (value ?? "").trim().toLowerCase();
+    if (mode == "estimate" || mode == "settled") {
+      return mode;
+    }
+    return "auto";
+  }
+
   void setAuthToken(String? token) {
     final normalized = token?.trim();
     _authToken = (normalized == null || normalized.isEmpty) ? null : normalized;
@@ -211,10 +219,13 @@ class ApiClient {
   Future<PortfolioResponse> fetchPortfolio({
     bool forceRefresh = false,
     int? accountId,
+    String quoteSource = "auto",
   }) async {
+    final source = _normalizeQuoteSource(quoteSource);
     final uri = Uri.parse("$baseUrl/api/portfolio").replace(
       queryParameters: <String, String>{
         if (accountId != null) "account_id": "$accountId",
+        "quote_source": source,
         if (forceRefresh) "force_refresh": "true",
         if (forceRefresh)
           "_ts": DateTime.now().millisecondsSinceEpoch.toString(),
@@ -290,8 +301,15 @@ class ApiClient {
     return AppAccount.fromJson(account);
   }
 
-  Future<List<WatchlistItem>> fetchWatchlist() async {
-    final uri = Uri.parse("$baseUrl/api/watchlist");
+  Future<List<WatchlistItem>> fetchWatchlist({
+    String quoteSource = "auto",
+  }) async {
+    final source = _normalizeQuoteSource(quoteSource);
+    final uri = Uri.parse("$baseUrl/api/watchlist").replace(
+      queryParameters: <String, String>{
+        "quote_source": source,
+      },
+    );
     final response = await _client
         .get(uri, headers: _backendHeaders())
         .timeout(_requestTimeout);
@@ -340,10 +358,13 @@ class ApiClient {
   Future<FundAnalysis> analyzeWatchFund({
     required String code,
     String name = "",
+    String quoteSource = "auto",
   }) async {
+    final source = _normalizeQuoteSource(quoteSource);
     final uri = Uri.parse("$baseUrl/api/watchlist/analyze").replace(
       queryParameters: <String, String>{
         "code": code.trim(),
+        "quote_source": source,
         if (name.trim().isNotEmpty) "name": name.trim(),
       },
     );
