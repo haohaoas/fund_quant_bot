@@ -194,7 +194,8 @@ def _fetch_biying_quote(code: str) -> Dict[str, Any]:
         pass
 
     try:
-        resp = sess.get(url, headers=headers, timeout=(4, 8), proxies={})
+        # Keep Biying timeout short; avoid per-code serial latency causing API timeout.
+        resp = sess.get(url, headers=headers, timeout=(0.8, 1.2), proxies={})
     except Exception as e:
         return {"ok": False, "error": f"biying request error: {type(e).__name__}: {e}"}
 
@@ -713,25 +714,28 @@ def fetch_fund_gz(code: str, source_mode: str = "biying") -> Dict[str, Any]:
         return {"ok": False, "error": "empty code"}
     mode = _norm_quote_source_mode(source_mode)
 
-    if mode == "settled":
-        settled = _fallback_quote_from_settled_nav(c)
-        if settled.get("ok"):
-            return settled
-    elif mode == "biying":
-        by = _fetch_biying_quote(c)
-        if by.get("ok"):
-            return by
-    elif mode == "auto":
-        # auto keeps existing strategy but tries Biying first when configured.
-        by = _fetch_biying_quote(c)
-        if by.get("ok"):
-            return by
-
     now = time.time()
     cache_key = f"{c}|{mode}"
     cached = _FUNDGZ_CACHE.get(cache_key)
     if cached and (now - cached[0]) <= _FUNDGZ_TTL_SECONDS:
         return cached[1]
+
+    if mode == "settled":
+        settled = _fallback_quote_from_settled_nav(c)
+        if settled.get("ok"):
+            _FUNDGZ_CACHE[cache_key] = (now, settled)
+            return settled
+    elif mode == "biying":
+        by = _fetch_biying_quote(c)
+        if by.get("ok"):
+            _FUNDGZ_CACHE[cache_key] = (now, by)
+            return by
+    elif mode == "auto":
+        # auto keeps existing strategy but tries Biying first when configured.
+        by = _fetch_biying_quote(c)
+        if by.get("ok"):
+            _FUNDGZ_CACHE[cache_key] = (now, by)
+            return by
 
     headers = {
         "User-Agent": (
