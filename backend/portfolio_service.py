@@ -191,6 +191,7 @@ def _fetch_settled_nav_snapshot(code: str, jzrq: str) -> Dict[str, Any]:
         "prev_nav": float|None,
         "daily_change_pct": float|None,
         "jzrq": "YYYY-MM-DD",
+        "name": str,
       }
     """
     c = str(code or "").strip()
@@ -228,6 +229,7 @@ def _fetch_settled_nav_snapshot(code: str, jzrq: str) -> Dict[str, Any]:
                 "prev_nav": float(d_prev) if d_prev is not None else None,
                 "daily_change_pct": float(d_pct) if d_pct is not None else None,
                 "jzrq": d_jzrq or target,
+                "name": str((daily or {}).get("name") or "").strip(),
             }
             _SETTLED_NAV_CACHE[key] = (now, out)
             return out
@@ -439,13 +441,14 @@ def _fallback_quote_from_settled_nav(code: str) -> Dict[str, Any]:
         except Exception:
             pct = None
 
-    name = ""
+    name = str((snap or {}).get("name") or "").strip()
     try:
         from data import get_fund_name
 
-        name = str(get_fund_name(c) or "").strip()
+        if not name:
+            name = str(get_fund_name(c) or "").strip()
     except Exception:
-        name = ""
+        pass
 
     return {
         "ok": True,
@@ -767,6 +770,14 @@ def enrich_position(pos: Dict[str, Any], quote_source: str = "auto") -> Dict[str
 
     gz = fetch_fund_gz(code, source_mode=source_mode) if code else {"ok": False}
     name = str(gz.get("name") or "").strip() if gz.get("ok") else ""
+    if not name and code:
+        # settled-only path may return empty name for some funds; fallback by code map.
+        try:
+            from data import get_fund_name
+
+            name = str(get_fund_name(code) or "").strip()
+        except Exception:
+            name = ""
 
     nav = _safe_float(gz.get("nav")) if gz.get("ok") else None
     prev_nav = _safe_float(gz.get("prev_nav")) if gz.get("ok") else None
