@@ -126,7 +126,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final Set<String> _deletingPositionCodes = <String>{};
   Timer? _autoRefreshTimer;
   bool _autoRefreshInFlight = false;
-  String _quoteSourceMode = "auto";
+  String _quoteSourceMode = "biying";
 
   @override
   void initState() {
@@ -777,12 +777,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   String _quoteSourceLabel(String mode) {
     switch (mode) {
+      case "biying":
+        return "必盈优先";
       case "estimate":
         return "估值优先";
       case "settled":
         return "净值优先";
       default:
-        return "智能";
+        return "必盈优先";
     }
   }
 
@@ -791,7 +793,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       final prefs = await SharedPreferences.getInstance();
       final saved =
           (prefs.getString(_quoteSourcePrefKey) ?? "").trim().toLowerCase();
-      final mode = (saved == "estimate" || saved == "settled") ? saved : "auto";
+      final mode =
+          (saved == "estimate" || saved == "settled" || saved == "biying")
+              ? saved
+              : "biying";
       if (!mounted) {
         return;
       }
@@ -844,9 +849,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               ),
               const SizedBox(height: 6),
               option(
-                mode: "auto",
-                title: "智能",
-                subtitle: "盘中估值，收盘后自动切真实净值",
+                mode: "biying",
+                title: "必盈优先",
+                subtitle: "优先必盈实时行情，失败自动回退",
               ),
               option(
                 mode: "estimate",

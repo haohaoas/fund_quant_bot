@@ -18,7 +18,7 @@ class WatchlistPayload(BaseModel):
 
 @router.get("/api/watchlist")
 def get_watchlist(
-    quote_source: str = "auto",
+    quote_source: str = "biying",
     user: Dict[str, Any] = Depends(get_current_user),
 ):
     uid = int(user["id"])
@@ -51,7 +51,7 @@ def delete_watchlist(code: str, user: Dict[str, Any] = Depends(get_current_user)
 def analyze_watchlist_fund(
     code: str,
     name: Optional[str] = None,
-    quote_source: str = "auto",
+    quote_source: str = "biying",
     user: Dict[str, Any] = Depends(get_current_user),
 ):
     _ = user

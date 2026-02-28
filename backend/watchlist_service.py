@@ -32,9 +32,9 @@ def _norm_code(code: str) -> str:
 
 def _norm_quote_source_mode(mode: str) -> str:
     m = str(mode or "").strip().lower()
-    if m in {"auto", "estimate", "settled"}:
+    if m in {"auto", "estimate", "settled", "biying"}:
         return m
-    return "auto"
+    return "biying"
 
 
 def _item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -337,7 +337,7 @@ def _match_sector_pct_from_fallback(
     return best_pct
 
 
-def list_watchlist(user_id: int, quote_source: str = "auto") -> List[Dict[str, Any]]:
+def list_watchlist(user_id: int, quote_source: str = "biying") -> List[Dict[str, Any]]:
     uid = _norm_user_id(user_id)
     source_mode = _norm_quote_source_mode(quote_source)
     with get_conn() as conn:
@@ -549,7 +549,7 @@ def remove_watchlist(user_id: int, code: str) -> bool:
     return int(cur.rowcount or 0) > 0
 
 
-def analyze_fund(code: str, name: str = "", quote_source: str = "auto") -> Dict[str, Any]:
+def analyze_fund(code: str, name: str = "", quote_source: str = "biying") -> Dict[str, Any]:
     c = _norm_code(code)
     source_mode = _norm_quote_source_mode(quote_source)
     display_name = str(name or "").strip()

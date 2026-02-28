@@ -15,6 +15,7 @@
 
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, timedelta
+import os
 import time
 import sqlite3
 
@@ -52,7 +53,7 @@ _OPEN_FUND_DAILY_CACHE: Dict[str, Any] = {"ts": 0.0, "data": {}}
 _ETF_SPOT_TTL_SECONDS = 120
 _ETF_SPOT_CACHE: Dict[str, Any] = {"ts": 0.0, "data": {}}
 DEFAULT_ACCOUNT_ID = 1
-_QUOTE_SOURCE_MODES = {"auto", "estimate", "settled"}
+_QUOTE_SOURCE_MODES = {"auto", "estimate", "settled", "biying"}
 
 
 def clear_fund_gz_cache(code: Optional[str] = None) -> None:
@@ -81,7 +82,7 @@ def _norm_quote_source_mode(mode: str) -> str:
     m = str(mode or "").strip().lower()
     if m in _QUOTE_SOURCE_MODES:
         return m
-    return "auto"
+    return "biying"
 
 
 def _norm_code6(code: str) -> str:
@@ -121,6 +122,140 @@ def _parse_jsonp_obj(text: str) -> Dict[str, Any]:
     s = (text or "").strip()
     if not s:
         return {}
+
+
+def _pick_first_nonempty(row: Dict[str, Any], keys: List[str]) -> Any:
+    for k in keys:
+        try:
+            v = row.get(k)
+        except Exception:
+            v = None
+        if v is None:
+            continue
+        s = str(v).strip()
+        if s in ("", "--", "-", "None", "nan", "NaN"):
+            continue
+        return v
+    return None
+
+
+def _extract_biying_row(payload: Any) -> Dict[str, Any]:
+    if isinstance(payload, list):
+        for item in payload:
+            if isinstance(item, dict):
+                return item
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+
+    data = payload.get("data")
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict):
+                return item
+    elif isinstance(data, dict):
+        # some providers return {"data": {"159001": {...}}}
+        if any(k in data for k in ("p", "price", "yc", "pc")):
+            return data
+        for _, item in data.items():
+            if isinstance(item, dict):
+                return item
+
+    if any(k in payload for k in ("p", "price", "yc", "pc")):
+        return payload
+    return {}
+
+
+def _fetch_biying_quote(code: str) -> Dict[str, Any]:
+    c = _norm_code6(code)
+    if not c:
+        return {"ok": False, "error": "empty code"}
+
+    licence = str(os.getenv("BIYING_LICENCE") or os.getenv("BIYING_LICENSE") or "").strip()
+    if not licence:
+        return {"ok": False, "error": "biying licence missing"}
+
+    base_url = str(os.getenv("BIYING_API_BASE") or "http://api.biyingapi.com").strip().rstrip("/")
+    url = f"{base_url}/fd/real/time/{c}/{licence}"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/121.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json,text/plain,*/*",
+        "Connection": "close",
+    }
+
+    sess = requests.Session()
+    try:
+        sess.trust_env = False
+    except Exception:
+        pass
+
+    try:
+        resp = sess.get(url, headers=headers, timeout=(4, 8), proxies={})
+    except Exception as e:
+        return {"ok": False, "error": f"biying request error: {type(e).__name__}: {e}"}
+
+    if resp.status_code != 200:
+        return {"ok": False, "error": f"biying HTTP {resp.status_code}"}
+
+    try:
+        payload = resp.json()
+    except Exception:
+        text = (resp.text or "").strip()
+        if not text:
+            return {"ok": False, "error": "biying empty response"}
+        return {"ok": False, "error": "biying non-json response"}
+
+    row = _extract_biying_row(payload)
+    if not row:
+        return {"ok": False, "error": "biying empty data"}
+
+    nav = _safe_float(_pick_first_nonempty(row, ["p", "price", "latest", "close"]))
+    prev_nav = _safe_float(_pick_first_nonempty(row, ["yc", "prev_close", "pre_close"]))
+    daily_change_pct = _safe_float(_pick_first_nonempty(row, ["pc", "pct", "change_percent"]))
+
+    if nav is None:
+        return {"ok": False, "error": "biying missing price"}
+
+    if daily_change_pct is None and nav is not None and prev_nav not in (None, 0):
+        try:
+            daily_change_pct = (float(nav) - float(prev_nav)) / float(prev_nav) * 100.0
+        except Exception:
+            daily_change_pct = None
+    if prev_nav is None and nav is not None and daily_change_pct not in (None, -100):
+        try:
+            prev_nav = float(nav) / (1.0 + float(daily_change_pct) / 100.0)
+        except Exception:
+            prev_nav = None
+
+    name = str(_pick_first_nonempty(row, ["mc", "name", "jjmc"]) or "").strip()
+    if not name:
+        try:
+            from data import get_fund_name
+
+            name = str(get_fund_name(c) or "").strip()
+        except Exception:
+            name = ""
+
+    gztime = str(_pick_first_nonempty(row, ["t", "time", "tm"]) or "").strip()
+    jzrq = datetime.now().strftime("%Y-%m-%d")
+    if isinstance(gztime, str) and len(gztime) >= 10 and gztime[4:5] in ("-", "/"):
+        jzrq = gztime[:10].replace("/", "-")
+
+    return {
+        "ok": True,
+        "code": c,
+        "name": name,
+        "nav": float(nav),
+        "prev_nav": float(prev_nav) if prev_nav is not None else None,
+        "daily_change_pct": float(daily_change_pct) if daily_change_pct is not None else None,
+        "jzrq": jzrq,
+        "gztime": gztime,
+        "source": "biying",
+    }
     # jsonpgz({...});
     if "(" in s and s.endswith(");"):
         try:
@@ -571,7 +706,7 @@ def _fetch_etf_spot_snapshot(code: str) -> Dict[str, Any]:
     return dict(merged.get(c) or {})
 
 
-def fetch_fund_gz(code: str, source_mode: str = "auto") -> Dict[str, Any]:
+def fetch_fund_gz(code: str, source_mode: str = "biying") -> Dict[str, Any]:
     """Fetch realtime/estimated fund info from Eastmoney fundgz."""
     c = str(code).strip()
     if not c:
@@ -582,6 +717,15 @@ def fetch_fund_gz(code: str, source_mode: str = "auto") -> Dict[str, Any]:
         settled = _fallback_quote_from_settled_nav(c)
         if settled.get("ok"):
             return settled
+    elif mode == "biying":
+        by = _fetch_biying_quote(c)
+        if by.get("ok"):
+            return by
+    elif mode == "auto":
+        # auto keeps existing strategy but tries Biying first when configured.
+        by = _fetch_biying_quote(c)
+        if by.get("ok"):
+            return by
 
     now = time.time()
     cache_key = f"{c}|{mode}"
@@ -762,7 +906,7 @@ def _round_or_none(x: Optional[float], nd: int = 2) -> Optional[float]:
         return None
 
 
-def enrich_position(pos: Dict[str, Any], quote_source: str = "auto") -> Dict[str, Any]:
+def enrich_position(pos: Dict[str, Any], quote_source: str = "biying") -> Dict[str, Any]:
     code = str(pos.get("code") or "").strip()
     shares = _safe_float(pos.get("shares")) or 0.0
     cost = _safe_float(pos.get("cost")) or 0.0
@@ -1092,7 +1236,7 @@ def set_account_cash(cash: float, account_id: Optional[int] = None, user_id: Opt
         raise ValueError(f"account not found: {aid}")
 
 
-def list_positions(account_id: Optional[int] = None, quote_source: str = "auto") -> List[Dict[str, Any]]:
+def list_positions(account_id: Optional[int] = None, quote_source: str = "biying") -> List[Dict[str, Any]]:
     aid = _norm_account_id(account_id)
     with get_conn() as conn:
         rows = conn.execute(
@@ -1110,7 +1254,7 @@ def list_positions(account_id: Optional[int] = None, quote_source: str = "auto")
 def get_position(
     code: str,
     account_id: Optional[int] = None,
-    quote_source: str = "auto",
+    quote_source: str = "biying",
 ) -> Optional[Dict[str, Any]]:
     aid = _norm_account_id(account_id)
     with get_conn() as conn:

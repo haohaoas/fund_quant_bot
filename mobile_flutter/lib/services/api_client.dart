@@ -90,10 +90,10 @@ class ApiClient {
 
   String _normalizeQuoteSource(String? value) {
     final mode = (value ?? "").trim().toLowerCase();
-    if (mode == "estimate" || mode == "settled") {
+    if (mode == "estimate" || mode == "settled" || mode == "biying") {
       return mode;
     }
-    return "auto";
+    return "biying";
   }
 
   void setAuthToken(String? token) {
@@ -219,7 +219,7 @@ class ApiClient {
   Future<PortfolioResponse> fetchPortfolio({
     bool forceRefresh = false,
     int? accountId,
-    String quoteSource = "auto",
+    String quoteSource = "biying",
   }) async {
     final source = _normalizeQuoteSource(quoteSource);
     final uri = Uri.parse("$baseUrl/api/portfolio").replace(
@@ -302,7 +302,7 @@ class ApiClient {
   }
 
   Future<List<WatchlistItem>> fetchWatchlist({
-    String quoteSource = "auto",
+    String quoteSource = "biying",
   }) async {
     final source = _normalizeQuoteSource(quoteSource);
     final uri = Uri.parse("$baseUrl/api/watchlist").replace(
@@ -358,7 +358,7 @@ class ApiClient {
   Future<FundAnalysis> analyzeWatchFund({
     required String code,
     String name = "",
-    String quoteSource = "auto",
+    String quoteSource = "biying",
   }) async {
     final source = _normalizeQuoteSource(quoteSource);
     final uri = Uri.parse("$baseUrl/api/watchlist/analyze").replace(

@@ -36,7 +36,7 @@ class SectorOverrideIn(BaseModel):
 def portfolio(
     force_refresh: bool = False,
     account_id: Optional[int] = None,
-    quote_source: str = "auto",
+    quote_source: str = "biying",
     user: Dict[str, Any] = Depends(get_current_user),
 ):
     uid = int(user["id"])
