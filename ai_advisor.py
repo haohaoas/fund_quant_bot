@@ -46,6 +46,8 @@ _DEEPSEEK_API_KEY = "sk-033b834656f24ee88f08254b6b66809f"
 _DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 _MODEL_NAME = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 _AI_TIMEOUT_SEC = float(os.getenv("DEEPSEEK_TIMEOUT_SEC", "5"))
+_AI_MAX_TOKENS = int(os.getenv("DEEPSEEK_MAX_TOKENS", "180"))
+_AI_MODE = str(os.getenv("WATCHLIST_AI_MODE", "fast")).strip().lower()
 
 if not _DEEPSEEK_API_KEY:
     print("[ai] 警告：未设置 DEEPSEEK_API_KEY / OPENAI_API_KEY，AI 决策将使用量化策略默认结果。")
@@ -179,6 +181,19 @@ SYSTEM_PROMPT = """
 - 不要输出任何额外文字（例如解释说明、Markdown 标题等），只输出一个合法 JSON 对象。
 """
 
+FAST_SYSTEM_PROMPT = """
+你是基金交易助手。请根据输入的基金实时信息、量化信号和板块信息，
+快速输出一个 JSON：
+{
+  "action": "BUY|SELL|HOLD",
+  "reason": "一句到两句中文理由（<=60字）"
+}
+要求：
+- 只输出 JSON，不要任何额外文字。
+- 若信息不足，优先 HOLD。
+- 不要编造不存在的数据。
+"""
+
 
 def ask_deepseek_fund_decision(
     fund_name: str,
@@ -258,31 +273,43 @@ def ask_deepseek_fund_decision(
         },
     }
 
-    user_prompt = (
-        "下面是某只基金的量化分析结果、今日行情、所属板块的情绪信息，以及风险配置。\n"
-        "请你按照系统提示中定义的多 Agent 架构进行内部分析、辩论与风险评估，"
-        "然后只输出一个 JSON 对象，结构必须与说明完全一致。\n\n"
-        f"{json.dumps(context, ensure_ascii=False, indent=2)}"
-    )
+    if _AI_MODE == "full":
+        system_prompt = SYSTEM_PROMPT
+        user_prompt = (
+            "下面是某只基金的量化分析结果、今日行情、所属板块的情绪信息，以及风险配置。\n"
+            "请你按照系统提示中定义的多 Agent 架构进行内部分析、辩论与风险评估，"
+            "然后只输出一个 JSON 对象，结构必须与说明完全一致。\n\n"
+            f"{json.dumps(context, ensure_ascii=False, separators=(',', ':'))}"
+        )
+    else:
+        system_prompt = FAST_SYSTEM_PROMPT
+        user_prompt = json.dumps(context, ensure_ascii=False, separators=(",", ":"))
 
     try:
         resp = _client.chat.completions.create(
             model=_MODEL_NAME,
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
             response_format={"type": "json_object"},
-            temperature=0.3,
+            temperature=0.1,
+            max_tokens=_AI_MAX_TOKENS,
             timeout=_AI_TIMEOUT_SEC,
         )
         content = resp.choices[0].message.content
         data = json.loads(content)
 
-        # 解析 Portfolio Manager 的最终决策
+        # full 模式兼容 trading_decision；fast 模式兼容 action/reason 直出
         trading = data.get("trading_decision", {}) if isinstance(data, dict) else {}
-        raw_action = str(trading.get("action", "")).upper()
-        reasoning = trading.get("reasoning", "") or data.get("reason", "")
+        raw_action = str(
+            data.get("action", "") or trading.get("action", "")
+        ).upper()
+        reasoning = (
+            data.get("reason", "")
+            or trading.get("reasoning", "")
+            or trading.get("summary", "")
+        )
 
         # 安全兜底
         if raw_action not in ("BUY", "SELL", "HOLD"):
