@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 import os
 import time
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
@@ -1282,7 +1283,51 @@ def list_positions(account_id: Optional[int] = None, quote_source: str = "auto")
             """,
             (aid,),
         ).fetchall()
-    return [enrich_position(dict(r), quote_source=quote_source) for r in rows]
+    if not rows:
+        return []
+
+    # Quote enrichment is network-bound; run in parallel to avoid serial timeout
+    # accumulation when portfolio contains many funds.
+    worker_count = min(6, max(1, len(rows)))
+    if worker_count <= 1:
+        return [enrich_position(dict(r), quote_source=quote_source) for r in rows]
+
+    indexed_rows = [(idx, dict(r)) for idx, r in enumerate(rows)]
+    ordered: List[Optional[Dict[str, Any]]] = [None] * len(indexed_rows)
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
+        fut_map = {
+            pool.submit(enrich_position, row, quote_source=quote_source): idx
+            for idx, row in indexed_rows
+        }
+        for fut in as_completed(fut_map):
+            idx = fut_map[fut]
+            base = indexed_rows[idx][1]
+            try:
+                ordered[idx] = fut.result()
+            except Exception:
+                # Keep endpoint available even if individual quote fetch fails.
+                fallback = dict(base)
+                fallback.update(
+                    {
+                        "name": str(base.get("code") or ""),
+                        "sector": "未知板块",
+                        "sector_pct": None,
+                        "latest_nav": None,
+                        "prev_nav": None,
+                        "daily_change_pct": None,
+                        "daily_profit": None,
+                        "market_value": None,
+                        "holding_profit": None,
+                        "holding_profit_pct": None,
+                        "data_source": "",
+                        "jzrq": "",
+                        "nav_settled": False,
+                        "gztime": "",
+                    }
+                )
+                ordered[idx] = fallback
+
+    return [x for x in ordered if isinstance(x, dict)]
 
 
 def get_position(
