@@ -44,7 +44,7 @@ from openai import OpenAI
 # 优先使用 DEEPSEEK_API_KEY，没有就用 OPENAI_API_KEY
 _DEEPSEEK_API_KEY = "sk-033b834656f24ee88f08254b6b66809f"
 _DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-_MODEL_NAME = os.getenv("DEEPSEEK_MODEL", "deepseek-reasoner")
+_MODEL_NAME = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 _AI_TIMEOUT_SEC = float(os.getenv("DEEPSEEK_TIMEOUT_SEC", "4"))
 
 if not _DEEPSEEK_API_KEY:
