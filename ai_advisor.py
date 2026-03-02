@@ -45,7 +45,7 @@ from openai import OpenAI
 _DEEPSEEK_API_KEY = "sk-033b834656f24ee88f08254b6b66809f"
 _DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 _MODEL_NAME = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
-_AI_TIMEOUT_SEC = float(os.getenv("DEEPSEEK_TIMEOUT_SEC", "4"))
+_AI_TIMEOUT_SEC = float(os.getenv("DEEPSEEK_TIMEOUT_SEC", "2.5"))
 
 if not _DEEPSEEK_API_KEY:
     print("[ai] 警告：未设置 DEEPSEEK_API_KEY / OPENAI_API_KEY，AI 决策将使用量化策略默认结果。")
@@ -54,6 +54,9 @@ else:
     _client = OpenAI(
         api_key=_DEEPSEEK_API_KEY,
         base_url=_DEEPSEEK_BASE_URL,
+        # Avoid long tail latency from SDK retries; fallback quickly.
+        max_retries=0,
+        timeout=_AI_TIMEOUT_SEC,
     )
 
 # === 多 Agent 版的系统提示词 ===
