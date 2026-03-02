@@ -702,7 +702,7 @@ def analyze_fund(code: str, name: str = "", quote_source: str = "auto") -> Dict[
         except Exception:
             pass
 
-    ai_enabled = os.getenv("WATCHLIST_ANALYZE_USE_AI", "0").strip() == "1"
+    ai_enabled = os.getenv("WATCHLIST_ANALYZE_USE_AI", "1").strip() == "1"
     ai: Dict[str, Any] = {
         "action": str(signal.get("action") or "HOLD"),
         "reason": "AI 分析未开启，已采用策略信号。",
