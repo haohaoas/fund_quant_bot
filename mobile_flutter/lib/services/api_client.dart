@@ -360,6 +360,7 @@ class ApiClient {
     String name = "",
     String quoteSource = "auto",
     bool includeAi = true,
+    Duration? timeout,
   }) async {
     final source = _normalizeQuoteSource(quoteSource);
     final uri = Uri.parse("$baseUrl/api/watchlist/analyze").replace(
@@ -372,7 +373,7 @@ class ApiClient {
     );
     final response = await _client
         .get(uri, headers: _backendHeaders())
-        .timeout(_requestTimeout);
+        .timeout(timeout ?? _requestTimeout);
     _ensureSuccess(response, uri);
     final payload = _decodeMap(response.body);
     return FundAnalysis.fromJson(payload);

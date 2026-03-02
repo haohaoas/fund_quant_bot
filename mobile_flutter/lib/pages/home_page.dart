@@ -2853,6 +2853,7 @@ class _FundAnalysisPageState extends State<_FundAnalysisPage> {
         name: widget.name,
         quoteSource: widget.quoteSource,
         includeAi: false,
+        timeout: const Duration(seconds: 6),
       );
       if (!mounted || seq != _loadSeq) {
         return;
@@ -2869,6 +2870,7 @@ class _FundAnalysisPageState extends State<_FundAnalysisPage> {
           name: widget.name,
           quoteSource: widget.quoteSource,
           includeAi: true,
+          timeout: const Duration(seconds: 10),
         );
         if (!mounted || seq != _loadSeq) {
           return;
