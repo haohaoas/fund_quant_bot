@@ -899,27 +899,28 @@ def _infer_sector_from_name(name: str) -> str:
     return ""
 
 
-def _get_sector_label(code: str, name: str = "") -> str:
+def _get_sector_label(code: str, name: str = "", resolve_cache: bool = True) -> str:
     ov = get_sector_override(code)
     if ov:
         return ov
 
     # 优先使用板块缓存表（miss 时会拉取一次并回填）。
-    try:
-        from backend.fund_sector_service import resolve_and_cache_fund_sector
+    if resolve_cache:
+        try:
+            from backend.fund_sector_service import resolve_and_cache_fund_sector
 
-        cached_or_resolved = str(
-            resolve_and_cache_fund_sector(
-                str(code or "").strip(),
-                fund_name=str(name or "").strip(),
-                static_fallback=str(FUND_TO_SECTOR.get(str(code or "").strip()) or ""),
-            )
-            or ""
-        ).strip()
-        if cached_or_resolved:
-            return cached_or_resolved
-    except Exception:
-        pass
+            cached_or_resolved = str(
+                resolve_and_cache_fund_sector(
+                    str(code or "").strip(),
+                    fund_name=str(name or "").strip(),
+                    static_fallback=str(FUND_TO_SECTOR.get(str(code or "").strip()) or ""),
+                )
+                or ""
+            ).strip()
+            if cached_or_resolved:
+                return cached_or_resolved
+        except Exception:
+            pass
 
     # 没覆盖才走你原来的逻辑：静态映射 / 名称推断 / 默认未知
     try:
@@ -986,15 +987,18 @@ def enrich_position(pos: Dict[str, Any], quote_source: str = "auto") -> Dict[str
             holding_profit_pct = ((nav - cost) / cost * 100.0) if (nav is not None and cost > 0) else holding_profit_pct
             daily_profit = (shares * (nav - prev_nav)) if (nav is not None and prev_nav is not None) else daily_profit
 
-    sector_label = _get_sector_label(code, name)
+    # Fast quote modes should avoid heavy sector backfill on each refresh.
+    fast_mode = source_mode in {"estimate", "biying"}
+    sector_label = _get_sector_label(code, name, resolve_cache=not fast_mode)
     sector_pct = None
-    try:
-        from sector import get_sector_sentiment
+    if not fast_mode:
+        try:
+            from sector import get_sector_sentiment
 
-        senti = get_sector_sentiment(sector_label) if sector_label else {}
-        sector_pct = _safe_float((senti or {}).get("flow_pct"))
-    except Exception:
-        sector_pct = None
+            senti = get_sector_sentiment(sector_label) if sector_label else {}
+            sector_pct = _safe_float((senti or {}).get("flow_pct"))
+        except Exception:
+            sector_pct = None
 
     out = dict(pos)
     out.update(
