@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 import os
 import time
 import sqlite3
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 
 import requests
 
@@ -57,6 +57,7 @@ _ETF_SPOT_TTL_SECONDS = 120
 _ETF_SPOT_CACHE: Dict[str, Any] = {"ts": 0.0, "data": {}}
 DEFAULT_ACCOUNT_ID = 1
 _QUOTE_SOURCE_MODES = {"auto", "estimate", "settled", "biying"}
+_PORTFOLIO_ENRICH_TIMEOUT_SECONDS = 8.0
 
 
 def clear_fund_gz_cache(code: Optional[str] = None) -> None:
@@ -124,6 +125,18 @@ def _pick_row_value(row: Any, keys: List[str]) -> Any:
 def _parse_jsonp_obj(text: str) -> Dict[str, Any]:
     s = (text or "").strip()
     if not s:
+        return {}
+    # jsonpgz({...});
+    if "(" in s and s.endswith(");"):
+        try:
+            s = s[s.find("(") + 1 : -2]
+        except Exception:
+            pass
+    try:
+        import json
+
+        return json.loads(s)
+    except Exception:
         return {}
 
 
@@ -277,17 +290,6 @@ def _fetch_biying_quote(code: str) -> Dict[str, Any]:
         "gztime": gztime,
         "source": "biying",
     }
-    # jsonpgz({...});
-    if "(" in s and s.endswith(");"):
-        try:
-            s = s[s.find("(") + 1 : -2]
-        except Exception:
-            pass
-    try:
-        import json
-        return json.loads(s)
-    except Exception:
-        return {}
 
 
 def _parse_local_date(value: Any):
@@ -947,6 +949,8 @@ def enrich_position(pos: Dict[str, Any], quote_source: str = "auto") -> Dict[str
     shares = _safe_float(pos.get("shares")) or 0.0
     cost = _safe_float(pos.get("cost")) or 0.0
     source_mode = _norm_quote_source_mode(quote_source)
+    # Fast quote modes should avoid heavy settled/sector backfill on each refresh.
+    fast_mode = source_mode in {"estimate", "biying"}
 
     gz = fetch_fund_gz(code, source_mode=source_mode) if code else {"ok": False}
     name = str(gz.get("name") or "").strip() if gz.get("ok") else ""
@@ -975,7 +979,7 @@ def enrich_position(pos: Dict[str, Any], quote_source: str = "auto") -> Dict[str
     nav_settled = _is_nav_settled(gz) if gz.get("ok") else False
 
     # 若净值已结算，优先用历史净值回填真实日涨幅（避免继续显示估值涨幅）。
-    if nav_settled and code:
+    if (not fast_mode) and nav_settled and code:
         snap = _fetch_settled_nav_snapshot(code, jzrq)
         if snap:
             nav = _safe_float(snap.get("nav")) or nav
@@ -987,8 +991,6 @@ def enrich_position(pos: Dict[str, Any], quote_source: str = "auto") -> Dict[str
             holding_profit_pct = ((nav - cost) / cost * 100.0) if (nav is not None and cost > 0) else holding_profit_pct
             daily_profit = (shares * (nav - prev_nav)) if (nav is not None and prev_nav is not None) else daily_profit
 
-    # Fast quote modes should avoid heavy sector backfill on each refresh.
-    fast_mode = source_mode in {"estimate", "biying"}
     sector_label = _get_sector_label(code, name, resolve_cache=not fast_mode)
     sector_pct = None
     if not fast_mode:
@@ -1303,33 +1305,53 @@ def list_positions(account_id: Optional[int] = None, quote_source: str = "auto")
             pool.submit(enrich_position, row, quote_source=quote_source): idx
             for idx, row in indexed_rows
         }
-        for fut in as_completed(fut_map):
+        try:
+            completed_futs = set(
+                as_completed(
+                    fut_map,
+                    timeout=_PORTFOLIO_ENRICH_TIMEOUT_SECONDS,
+                )
+            )
+        except FuturesTimeoutError:
+            completed_futs = {f for f in fut_map.keys() if f.done()}
+
+        for fut in completed_futs:
             idx = fut_map[fut]
             base = indexed_rows[idx][1]
             try:
                 ordered[idx] = fut.result()
             except Exception:
-                # Keep endpoint available even if individual quote fetch fails.
-                fallback = dict(base)
-                fallback.update(
-                    {
-                        "name": str(base.get("code") or ""),
-                        "sector": "未知板块",
-                        "sector_pct": None,
-                        "latest_nav": None,
-                        "prev_nav": None,
-                        "daily_change_pct": None,
-                        "daily_profit": None,
-                        "market_value": None,
-                        "holding_profit": None,
-                        "holding_profit_pct": None,
-                        "data_source": "",
-                        "jzrq": "",
-                        "nav_settled": False,
-                        "gztime": "",
-                    }
-                )
-                ordered[idx] = fallback
+                pass
+
+        for fut, idx in fut_map.items():
+            if ordered[idx] is not None:
+                continue
+            base = indexed_rows[idx][1]
+            try:
+                fut.cancel()
+            except Exception:
+                pass
+            # Keep endpoint available even if individual quote fetch fails/times out.
+            fallback = dict(base)
+            fallback.update(
+                {
+                    "name": str(base.get("code") or ""),
+                    "sector": "未知板块",
+                    "sector_pct": None,
+                    "latest_nav": None,
+                    "prev_nav": None,
+                    "daily_change_pct": None,
+                    "daily_profit": None,
+                    "market_value": None,
+                    "holding_profit": None,
+                    "holding_profit_pct": None,
+                    "data_source": "",
+                    "jzrq": "",
+                    "nav_settled": False,
+                    "gztime": "",
+                }
+            )
+            ordered[idx] = fallback
 
     return [x for x in ordered if isinstance(x, dict)]
 
