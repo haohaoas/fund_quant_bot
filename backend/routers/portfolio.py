@@ -47,7 +47,10 @@ def portfolio(
 
     if force_refresh:
         clear_fn = getattr(ps, "clear_fund_gz_cache", None)
-        if callable(clear_fn):
+        source_mode = str(quote_source or "").strip().lower()
+        # estimate mode is latency-sensitive; keep short-lived cache to avoid
+        # serial network calls timing out on portfolio page.
+        if callable(clear_fn) and source_mode != "estimate":
             clear_fn()
     classic_positions = ps.list_positions(
         account_id=aid,
