@@ -382,7 +382,10 @@ def list_watchlist(user_id: int, quote_source: str = "auto") -> List[Dict[str, A
     except Exception:
         fetch_fund_gz = None
 
-    sector_pct_fallback_map = _build_sector_pct_fallback_map()
+    sector_pct_fallback_enabled = (
+        os.getenv("WATCHLIST_SECTOR_PCT_FALLBACK", "0").strip() == "1"
+    )
+    sector_pct_fallback_map: Dict[str, float] = {}
 
     for item in items:
         code = str(item["code"] or "").strip()
@@ -419,7 +422,12 @@ def list_watchlist(user_id: int, quote_source: str = "auto") -> List[Dict[str, A
             and item["name"]
         )
 
-        if callable(get_fund_latest_price) and need_quote_fallback:
+        # estimate/biying mode should stay responsive: do not go heavy history fallback.
+        if (
+            callable(get_fund_latest_price)
+            and need_quote_fallback
+            and source_mode not in {"estimate", "biying"}
+        ):
             try:
                 latest = get_fund_latest_price(code) or {}
             except Exception:
@@ -463,7 +471,7 @@ def list_watchlist(user_id: int, quote_source: str = "auto") -> List[Dict[str, A
                     resolve_and_cache_fund_sector(
                         code,
                         fund_name=item["name"],
-                        force_refresh=True,
+                        force_refresh=False,
                     )
                     or ""
                 ).strip()
@@ -487,7 +495,14 @@ def list_watchlist(user_id: int, quote_source: str = "auto") -> List[Dict[str, A
             except Exception:
                 item["sector_pct"] = None
 
-        if item["sector_pct"] is None and item["sector_name"] and item["sector_name"] != "未知板块":
+        if (
+            sector_pct_fallback_enabled
+            and item["sector_pct"] is None
+            and item["sector_name"]
+            and item["sector_name"] != "未知板块"
+        ):
+            if not sector_pct_fallback_map:
+                sector_pct_fallback_map = _build_sector_pct_fallback_map()
             item["sector_pct"] = _match_sector_pct_from_fallback(
                 item["sector_name"],
                 sector_pct_fallback_map,
