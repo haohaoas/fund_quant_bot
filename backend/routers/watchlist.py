@@ -16,6 +16,12 @@ class WatchlistPayload(BaseModel):
     name: str = Field(default="")
 
 
+class WatchlistSectorPayload(BaseModel):
+    code: str = Field(..., min_length=1)
+    sector: str = Field(default="")
+    name: str = Field(default="")
+
+
 @router.get("/api/watchlist")
 def get_watchlist(
     quote_source: str = "auto",
@@ -45,6 +51,24 @@ def delete_watchlist(code: str, user: Dict[str, Any] = Depends(get_current_user)
     if not ok:
         raise HTTPException(status_code=404, detail="watchlist item not found")
     return {"ok": True, "code": code}
+
+
+@router.post("/api/watchlist/sector")
+def set_watchlist_sector(
+    payload: WatchlistSectorPayload,
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    uid = int(user["id"])
+    try:
+        result = ws.set_watchlist_sector(
+            uid,
+            payload.code,
+            payload.sector,
+            payload.name,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, **result}
 
 
 @router.get("/api/watchlist/analyze")

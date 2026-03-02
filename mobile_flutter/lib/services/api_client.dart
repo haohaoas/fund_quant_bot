@@ -355,6 +355,26 @@ class ApiClient {
     _ensureSuccess(response, uri);
   }
 
+  Future<void> setWatchlistSector({
+    required String code,
+    required String sector,
+    String name = "",
+  }) async {
+    final uri = Uri.parse("$baseUrl/api/watchlist/sector");
+    final response = await _client
+        .post(
+          uri,
+          headers: _backendHeaders({"content-type": "application/json"}),
+          body: jsonEncode(<String, dynamic>{
+            "code": code.trim(),
+            "sector": sector.trim(),
+            "name": name.trim(),
+          }),
+        )
+        .timeout(_requestTimeout);
+    _ensureSuccess(response, uri);
+  }
+
   Future<FundAnalysis> analyzeWatchFund({
     required String code,
     String name = "",

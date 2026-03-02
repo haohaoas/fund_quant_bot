@@ -380,6 +380,14 @@ def list_watchlist(user_id: int, quote_source: str = "auto") -> List[Dict[str, A
         get_cached_fund_sector = None
         resolve_and_cache_fund_sector = None
     try:
+        from backend.fund_sector_service import (
+            get_cached_fund_sector,
+            resolve_and_cache_fund_sector,
+        )
+    except Exception:
+        get_cached_fund_sector = None
+        resolve_and_cache_fund_sector = None
+    try:
         from backend.portfolio_service import fetch_fund_gz
     except Exception:
         fetch_fund_gz = None
@@ -566,6 +574,75 @@ def remove_watchlist(user_id: int, code: str) -> bool:
     return int(cur.rowcount or 0) > 0
 
 
+def set_watchlist_sector(
+    user_id: int,
+    code: str,
+    sector: str,
+    name: str = "",
+) -> Dict[str, Any]:
+    """
+    Manually set sector for a fund and persist to backend cache.
+    - If `sector` is non-empty: write manual override into fund_sector_cache.
+    - If `sector` is empty: clear manual intent by forcing auto-resolve refresh.
+    """
+    uid = _norm_user_id(user_id)
+    c = _norm_code(code)
+    manual_sector = str(sector or "").strip()
+    display_name = str(name or "").strip()
+
+    with get_conn() as conn:
+        wl_row = conn.execute(
+            """
+            SELECT id, name
+            FROM watchlist_funds
+            WHERE user_id = ? AND code = ?
+            """,
+            (uid, c),
+        ).fetchone()
+        if wl_row is None:
+            pos_row = conn.execute(
+                """
+                SELECT 1
+                FROM positions p
+                JOIN accounts a ON a.id = p.account_id
+                WHERE a.user_id = ? AND p.code = ?
+                LIMIT 1
+                """,
+                (uid, c),
+            ).fetchone()
+            if pos_row is None:
+                raise ValueError("fund not found in watchlist/holdings")
+            # Keep holdings' manual sector editable: materialize into watchlist.
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO watchlist_funds
+                    (user_id, code, name, created_at, updated_at)
+                VALUES
+                    (?, ?, ?, datetime('now','localtime'), datetime('now','localtime'))
+                """,
+                (uid, c, display_name),
+            )
+
+    from backend.fund_sector_service import (
+        get_cached_fund_sector,
+        resolve_and_cache_fund_sector,
+        set_cached_fund_sector,
+    )
+
+    if manual_sector:
+        set_cached_fund_sector(c, manual_sector, "manual")
+    else:
+        # Empty input means "restore auto detection".
+        resolve_and_cache_fund_sector(c, fund_name=display_name, force_refresh=True)
+
+    cached = get_cached_fund_sector(c) or {}
+    return {
+        "code": c,
+        "sector_name": str(cached.get("sector") or "未知板块"),
+        "source": str(cached.get("source") or ""),
+    }
+
+
 def analyze_fund(
     code: str,
     name: str = "",
@@ -688,13 +765,34 @@ def analyze_fund(
                 "base_price": None,
             }
 
-    if callable(get_sector_by_fund):
+    sector_name = ""
+    if callable(get_cached_fund_sector):
+        try:
+            cached = get_cached_fund_sector(c) or {}
+            sector_name = str(cached.get("sector") or "").strip()
+            if sector_name == "未知板块":
+                sector_name = ""
+        except Exception:
+            sector_name = ""
+    if (not sector_name) and callable(resolve_and_cache_fund_sector):
+        try:
+            sector_name = str(
+                resolve_and_cache_fund_sector(
+                    c,
+                    fund_name=display_name,
+                    force_refresh=False,
+                )
+                or ""
+            ).strip()
+            if sector_name == "未知板块":
+                sector_name = ""
+        except Exception:
+            sector_name = ""
+    if (not sector_name) and callable(get_sector_by_fund):
         try:
             sector_name = str(get_sector_by_fund(c) or "").strip()
         except Exception:
             sector_name = ""
-    else:
-        sector_name = ""
 
     sector_info: Dict[str, Any] = {
         "sector": sector_name or "未知板块",

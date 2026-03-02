@@ -83,6 +83,7 @@ class FundAnalysis {
     required this.latestPrice,
     required this.latestPct,
     required this.latestTime,
+    required this.latestSource,
     required this.signalAction,
     required this.signalPositionHint,
     required this.signalReason,
@@ -101,6 +102,7 @@ class FundAnalysis {
   final double? latestPrice;
   final double? latestPct;
   final String latestTime;
+  final String latestSource;
   final String signalAction;
   final String signalPositionHint;
   final String signalReason;
@@ -152,6 +154,7 @@ class FundAnalysis {
       latestPrice: toDoubleOrNull(latest["price"]),
       latestPct: toDoubleOrNull(latest["pct"]),
       latestTime: toText(latest["time"]),
+      latestSource: toText(latest["source"], "-"),
       signalAction: toText(signal["action"], "HOLD"),
       signalPositionHint: toText(signal["position_hint"], "KEEP"),
       signalReason: toText(signal["reason"]),

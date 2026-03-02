@@ -1963,6 +1963,145 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
+  Future<String?> _showEditSectorDialog(_WatchlistDisplayItem item) async {
+    final raw = item.sectorName.trim();
+    final initial = raw == "未知板块" ? "" : raw;
+    final controller = TextEditingController(text: initial);
+    final result = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text("手动设置板块"),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                item.displayName,
+                style: const TextStyle(
+                  fontSize: 13,
+                  color: Color(0xFF6C7387),
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: controller,
+                maxLength: 20,
+                decoration: const InputDecoration(
+                  labelText: "板块名称",
+                  hintText: "如：半导体、AI应用",
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                "留空并保存 = 恢复自动识别",
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Color(0xFF9AA1B2),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(null),
+              child: const Text("取消"),
+            ),
+            FilledButton(
+              onPressed: () =>
+                  Navigator.of(dialogContext).pop(controller.text.trim()),
+              child: const Text("保存"),
+            ),
+          ],
+        );
+      },
+    );
+    await Future<void>.delayed(Duration.zero);
+    controller.dispose();
+    return result;
+  }
+
+  Future<void> _onEditSectorPressed(_WatchlistDisplayItem item) async {
+    final sector = await _showEditSectorDialog(item);
+    if (sector == null) {
+      return;
+    }
+    try {
+      await widget.apiClient.setWatchlistSector(
+        code: item.code,
+        sector: sector,
+        name: item.name,
+      );
+      if (!mounted) {
+        return;
+      }
+      await _loadWatchlist(showLoading: false);
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            sector.isEmpty ? "已恢复自动板块识别" : "已设置板块：$sector",
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("保存板块失败: $error")),
+      );
+    }
+  }
+
+  Future<void> _showWatchlistItemActions(_WatchlistDisplayItem item) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.edit_outlined),
+                title: const Text("编辑板块"),
+                subtitle: Text(item.sectorName.trim().isEmpty
+                    ? "当前：未知板块"
+                    : "当前：${item.sectorName.trim()}"),
+                onTap: () => Navigator.of(sheetContext).pop("sector"),
+              ),
+              if (item.canRemove)
+                ListTile(
+                  leading: const Icon(Icons.remove_circle_outline,
+                      color: Colors.red),
+                  title: const Text("移除自选"),
+                  onTap: () => Navigator.of(sheetContext).pop("delete"),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+    if (!mounted || action == null) {
+      return;
+    }
+    if (action == "sector") {
+      await _onEditSectorPressed(item);
+      return;
+    }
+    if (action == "delete") {
+      final src = _findWatchlistSource(item.code);
+      if (src != null) {
+        await _onDeleteWatchlistPressed(src);
+      }
+    }
+  }
+
   Widget _buildControls() {
     return Card(
       child: Padding(
@@ -2340,17 +2479,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                       );
                     },
                     onLongPress: () {
-                      if (!item.canRemove) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text("持有基金默认并入自选，不能在这里删除")),
-                        );
-                        return;
-                      }
-                      final src = _findWatchlistSource(item.code);
-                      if (src == null) {
-                        return;
-                      }
-                      unawaited(_onDeleteWatchlistPressed(src));
+                      unawaited(_showWatchlistItemActions(item));
                     },
                     child: Container(
                       padding: const EdgeInsets.fromLTRB(12, 9, 12, 9),
@@ -2934,6 +3063,76 @@ class _FundAnalysisPageState extends State<_FundAnalysisPage> {
     return value.toStringAsFixed(digits);
   }
 
+  Color _actionColor(String action) {
+    switch (action.toUpperCase()) {
+      case "BUY":
+        return const Color(0xFF2457FF);
+      case "SELL":
+        return const Color(0xFFB42318);
+      default:
+        return const Color(0xFF6C7387);
+    }
+  }
+
+  Widget _pill(
+    String text, {
+    required Color color,
+    Color? background,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: background ?? color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: color,
+          fontSize: 12,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+
+  Widget _sectionCard({
+    required String title,
+    required Widget child,
+    IconData icon = Icons.article_outlined,
+  }) {
+    return Container(
+      margin: const EdgeInsets.only(top: 12),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE7EBF3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 18, color: const Color(0xFF2457FF)),
+              const SizedBox(width: 6),
+              Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFF1F2A44),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          child,
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final analysis = _analysis;
@@ -2958,132 +3157,252 @@ class _FundAnalysisPageState extends State<_FundAnalysisPage> {
                 physics: const AlwaysScrollableScrollPhysics(
                   parent: ClampingScrollPhysics(),
                 ),
-                padding: const EdgeInsets.all(12),
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
                 children: [
                   if (_error != null)
-                    Card(
-                      color: const Color(0xFFFFF4F4),
-                      child: Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Text(
-                          _error!,
-                          style: TextStyle(color: Colors.red.shade700),
-                        ),
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 10),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFF1F2),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFFFECACA)),
+                      ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Icon(
+                            Icons.error_outline_rounded,
+                            color: Color(0xFFB42318),
+                            size: 18,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              _error!,
+                              style: const TextStyle(
+                                color: Color(0xFFB42318),
+                                fontSize: 13,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   if (analysis != null) ...[
-                    Card(
-                      child: ListTile(
-                        title: Text("${analysis.name} (${analysis.code})"),
-                        subtitle: Text("更新时间: ${analysis.generatedAt}"),
-                        trailing: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          children: [
-                            Text(_fmtNum(analysis.latestPrice, digits: 4)),
-                            Text(
-                              analysis.latestPct == null
-                                  ? "--"
-                                  : "${analysis.latestPct! >= 0 ? "+" : ""}${analysis.latestPct!.toStringAsFixed(2)}%",
-                              style: TextStyle(
-                                color: (analysis.latestPct ?? 0) >= 0
-                                    ? const Color(0xFFD6464F)
-                                    : const Color(0xFF1F9D61),
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ],
+                    Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(16),
+                        gradient: const LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [Color(0xFF1F44C8), Color(0xFF3C74FF)],
                         ),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0x332457FF),
+                            blurRadius: 16,
+                            offset: Offset(0, 8),
+                          ),
+                        ],
                       ),
-                    ),
-                    Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              "策略信号",
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w700,
-                              ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            "${analysis.name} (${analysis.code})",
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 16,
+                              fontWeight: FontWeight.w800,
                             ),
-                            const SizedBox(height: 8),
-                            Text("动作: ${analysis.signalAction}"),
-                            Text("仓位建议: ${analysis.signalPositionHint}"),
-                            if (analysis.basePrice != null)
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            "更新时间: ${analysis.generatedAt}",
+                            style: const TextStyle(
+                              color: Color(0xFFDCE7FF),
+                              fontSize: 12,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
                               Text(
-                                  "参考中枢: ${analysis.basePrice!.toStringAsFixed(4)}"),
-                            if (analysis.grids.isNotEmpty)
-                              Text(
-                                "网格: ${analysis.grids.map((e) => e.toStringAsFixed(4)).join(" / ")}",
+                                _fmtNum(analysis.latestPrice, digits: 4),
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 30,
+                                  fontWeight: FontWeight.w800,
+                                  height: 1,
+                                ),
                               ),
+                              const SizedBox(width: 10),
+                              _pill(
+                                analysis.latestPct == null
+                                    ? "--"
+                                    : "${analysis.latestPct! >= 0 ? "+" : ""}${analysis.latestPct!.toStringAsFixed(2)}%",
+                                color: Colors.white,
+                                background: const Color(0x33FFFFFF),
+                              ),
+                              const Spacer(),
+                              _pill(
+                                "AI ${analysis.aiAction}",
+                                color: Colors.white,
+                                background: const Color(0x26FFFFFF),
+                              ),
+                            ],
+                          ),
+                          if (_aiLoading) ...[
+                            const SizedBox(height: 12),
+                            const LinearProgressIndicator(
+                              minHeight: 2,
+                              color: Colors.white,
+                              backgroundColor: Color(0x55FFFFFF),
+                            ),
                             const SizedBox(height: 6),
-                            Text(analysis.signalReason),
-                          ],
-                        ),
-                      ),
-                    ),
-                    Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
                             const Text(
-                              "板块情绪",
+                              "AI 分析更新中...",
                               style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w700,
+                                fontSize: 12,
+                                color: Color(0xFFE7EEFF),
                               ),
                             ),
-                            const SizedBox(height: 8),
-                            Text("板块: ${analysis.sectorName}"),
-                            Text("等级: ${analysis.sectorLevel}"),
-                            if (analysis.sectorComment.isNotEmpty)
-                              Text(analysis.sectorComment),
                           ],
-                        ),
+                        ],
                       ),
                     ),
-                    Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              "AI 结论",
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w700,
+                    _sectionCard(
+                      title: "策略信号",
+                      icon: Icons.track_changes_outlined,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              _pill(
+                                "动作 ${analysis.signalAction}",
+                                color: _actionColor(analysis.signalAction),
+                              ),
+                              _pill(
+                                "仓位 ${analysis.signalPositionHint}",
+                                color: const Color(0xFF2457FF),
+                              ),
+                              if (analysis.basePrice != null)
+                                _pill(
+                                  "中枢 ${analysis.basePrice!.toStringAsFixed(4)}",
+                                  color: const Color(0xFF6C7387),
+                                ),
+                            ],
+                          ),
+                          if (analysis.grids.isNotEmpty) ...[
+                            const SizedBox(height: 10),
+                            Text(
+                              "网格: ${analysis.grids.map((e) => e.toStringAsFixed(4)).join(" / ")}",
+                              style: const TextStyle(
+                                color: Color(0xFF465066),
+                                fontSize: 13,
                               ),
                             ),
-                            const SizedBox(height: 8),
-                            Text("建议动作: ${analysis.aiAction}"),
-                            const SizedBox(height: 4),
-                            Text(analysis.aiReason.isEmpty
-                                ? "暂无解释"
-                                : analysis.aiReason),
-                            if (_aiLoading) ...[
-                              const SizedBox(height: 10),
-                              const LinearProgressIndicator(minHeight: 2),
-                              const SizedBox(height: 6),
-                              const Text(
-                                "AI 分析更新中...",
-                                style: TextStyle(
-                                  fontSize: 12,
+                          ],
+                          const SizedBox(height: 10),
+                          Text(
+                            analysis.signalReason,
+                            style: const TextStyle(
+                              color: Color(0xFF1F2A44),
+                              fontSize: 14,
+                              height: 1.4,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    _sectionCard(
+                      title: "板块情绪",
+                      icon: Icons.hub_outlined,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              _pill(
+                                analysis.sectorName,
+                                color: const Color(0xFF2457FF),
+                              ),
+                              _pill(
+                                analysis.sectorLevel,
+                                color: const Color(0xFF6C7387),
+                              ),
+                            ],
+                          ),
+                          if (analysis.sectorComment.isNotEmpty) ...[
+                            const SizedBox(height: 10),
+                            Text(
+                              analysis.sectorComment,
+                              style: const TextStyle(
+                                color: Color(0xFF465066),
+                                fontSize: 14,
+                                height: 1.4,
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                    _sectionCard(
+                      title: "AI 结论",
+                      icon: Icons.psychology_alt_outlined,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              _pill(
+                                analysis.aiAction,
+                                color: _actionColor(analysis.aiAction),
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                analysis.latestSource,
+                                style: const TextStyle(
                                   color: Color(0xFF6C7387),
+                                  fontSize: 12,
                                 ),
                               ),
                             ],
-                          ],
+                          ),
+                          const SizedBox(height: 10),
+                          Text(
+                            analysis.aiReason.isEmpty
+                                ? "暂无解释"
+                                : analysis.aiReason,
+                            style: const TextStyle(
+                              color: Color(0xFF1F2A44),
+                              fontSize: 14,
+                              height: 1.45,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ] else ...[
+                    const SizedBox(height: 48),
+                    const Center(
+                      child: Text(
+                        "暂无分析数据，下拉重试",
+                        style: TextStyle(
+                          color: Color(0xFF6C7387),
+                          fontSize: 14,
                         ),
                       ),
                     ),
                   ],
-                  const SizedBox(height: 20),
                 ],
               ),
             ),
