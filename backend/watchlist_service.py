@@ -4,6 +4,7 @@ from datetime import datetime
 import os
 import time
 from typing import Any, Dict, List, Optional
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 from backend.db import get_conn, init_db
 
@@ -11,6 +12,7 @@ init_db()
 
 _SECTOR_PCT_FALLBACK_CACHE: Dict[str, Any] = {"ts": 0.0, "data": {}}
 _SECTOR_PCT_FALLBACK_TTL_SECONDS = 120
+_ANALYZE_SIGNAL_TIMEOUT_SEC = float(os.getenv("WATCHLIST_ANALYZE_SIGNAL_TIMEOUT_SEC", "2.5"))
 
 
 def _norm_user_id(user_id: int) -> int:
@@ -648,14 +650,19 @@ def analyze_fund(code: str, name: str = "", quote_source: str = "auto") -> Dict[
     else:
         if callable(generate_today_signal):
             try:
-                signal = generate_today_signal(c, price_f)
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    fut = pool.submit(generate_today_signal, c, price_f)
+                    signal = fut.result(timeout=_ANALYZE_SIGNAL_TIMEOUT_SEC)
             except Exception as e:
+                reason = f"策略计算失败: {type(e).__name__}"
+                if isinstance(e, FuturesTimeoutError):
+                    reason = "策略计算超时，已降级为观望建议"
                 signal = {
                     "action": "HOLD",
                     "position_hint": "KEEP",
                     "hit_level": None,
                     "price_vs_base_pct": None,
-                    "reason": f"策略计算失败: {type(e).__name__}",
+                    "reason": reason,
                     "grids": [],
                     "base_price": None,
                 }
