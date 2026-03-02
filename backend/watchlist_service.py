@@ -655,9 +655,9 @@ def analyze_fund(
     else:
         if callable(generate_today_signal):
             try:
-                with ThreadPoolExecutor(max_workers=1) as pool:
-                    fut = pool.submit(generate_today_signal, c, price_f)
-                    signal = fut.result(timeout=_ANALYZE_SIGNAL_TIMEOUT_SEC)
+                pool = ThreadPoolExecutor(max_workers=1)
+                fut = pool.submit(generate_today_signal, c, price_f)
+                signal = fut.result(timeout=_ANALYZE_SIGNAL_TIMEOUT_SEC)
             except Exception as e:
                 reason = f"策略计算失败: {type(e).__name__}"
                 if isinstance(e, FuturesTimeoutError):
@@ -671,6 +671,12 @@ def analyze_fund(
                     "grids": [],
                     "base_price": None,
                 }
+            finally:
+                try:
+                    # Do not wait on timeout path, otherwise request can still block.
+                    pool.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
         else:
             signal = {
                 "action": "HOLD",
