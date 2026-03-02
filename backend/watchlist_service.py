@@ -12,7 +12,7 @@ init_db()
 
 _SECTOR_PCT_FALLBACK_CACHE: Dict[str, Any] = {"ts": 0.0, "data": {}}
 _SECTOR_PCT_FALLBACK_TTL_SECONDS = 120
-_ANALYZE_SIGNAL_TIMEOUT_SEC = float(os.getenv("WATCHLIST_ANALYZE_SIGNAL_TIMEOUT_SEC", "2.5"))
+_ANALYZE_SIGNAL_TIMEOUT_SEC = float(os.getenv("WATCHLIST_ANALYZE_SIGNAL_TIMEOUT_SEC", "5"))
 
 
 def _norm_user_id(user_id: int) -> int:
