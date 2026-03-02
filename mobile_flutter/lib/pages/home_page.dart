@@ -2848,21 +2848,40 @@ class _FundAnalysisPageState extends State<_FundAnalysisPage> {
       _error = null;
     });
     try {
-      final quickResult = await widget.apiClient.analyzeWatchFund(
-        code: widget.code,
-        name: widget.name,
-        quoteSource: widget.quoteSource,
-        includeAi: false,
-        timeout: const Duration(seconds: 6),
-      );
+      FundAnalysis quickResult;
+      bool shouldLoadAi = true;
+      try {
+        quickResult = await widget.apiClient.analyzeWatchFund(
+          code: widget.code,
+          name: widget.name,
+          quoteSource: widget.quoteSource,
+          includeAi: false,
+          timeout: const Duration(seconds: 8),
+        );
+      } catch (e) {
+        // Backward compatibility: some servers may ignore include_ai or respond
+        // with validation errors. Fall back to a full analyze call so page still works.
+        quickResult = await widget.apiClient.analyzeWatchFund(
+          code: widget.code,
+          name: widget.name,
+          quoteSource: widget.quoteSource,
+          includeAi: true,
+          timeout: const Duration(seconds: 10),
+        );
+        shouldLoadAi = false;
+      }
       if (!mounted || seq != _loadSeq) {
         return;
       }
       setState(() {
         _analysis = quickResult;
         _loading = false;
-        _aiLoading = true;
+        _aiLoading = shouldLoadAi;
       });
+
+      if (!shouldLoadAi) {
+        return;
+      }
 
       try {
         final fullResult = await widget.apiClient.analyzeWatchFund(

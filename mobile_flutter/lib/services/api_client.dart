@@ -367,7 +367,7 @@ class ApiClient {
       queryParameters: <String, String>{
         "code": code.trim(),
         "quote_source": source,
-        "include_ai": includeAi ? "1" : "0",
+        "include_ai": includeAi ? "true" : "false",
         if (name.trim().isNotEmpty) "name": name.trim(),
       },
     );
