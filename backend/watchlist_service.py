@@ -675,6 +675,14 @@ def analyze_fund(
         from ai_advisor import ask_deepseek_fund_decision
     except Exception:
         ask_deepseek_fund_decision = None
+    try:
+        from backend.fund_sector_service import (
+            get_cached_fund_sector,
+            resolve_and_cache_fund_sector,
+        )
+    except Exception:
+        get_cached_fund_sector = None
+        resolve_and_cache_fund_sector = None
 
     if not display_name:
         cfg = WATCH_FUNDS.get(c, {})
