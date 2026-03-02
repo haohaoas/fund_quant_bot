@@ -46,6 +46,8 @@ init_db()
 
 _FUNDGZ_TTL_SECONDS = 30
 _FUNDGZ_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_FUNDGZ_CONNECT_TIMEOUT_SECONDS = 0.8
+_FUNDGZ_READ_TIMEOUT_SECONDS = 1.2
 _SETTLED_NAV_TTL_SECONDS = 900
 _SETTLED_NAV_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _OPEN_FUND_DAILY_TTL_SECONDS = 600
@@ -775,12 +777,21 @@ def fetch_fund_gz(code: str, source_mode: str = "auto") -> Dict[str, Any]:
         pass
 
     try:
-        resp = sess.get(url, headers=headers, timeout=(5, 20), proxies={})
+        resp = sess.get(
+            url,
+            headers=headers,
+            timeout=(
+                _FUNDGZ_CONNECT_TIMEOUT_SECONDS,
+                _FUNDGZ_READ_TIMEOUT_SECONDS,
+            ),
+            proxies={},
+        )
         if resp.status_code != 200:
-            fb = _fallback_quote_from_settled_nav(c)
-            if fb.get("ok"):
-                _FUNDGZ_CACHE[cache_key] = (now, fb)
-                return fb
+            if mode != "estimate":
+                fb = _fallback_quote_from_settled_nav(c)
+                if fb.get("ok"):
+                    _FUNDGZ_CACHE[cache_key] = (now, fb)
+                    return fb
             out = {"ok": False, "error": f"HTTP {resp.status_code}"}
             _FUNDGZ_CACHE[cache_key] = (now, out)
             return out
@@ -788,10 +799,11 @@ def fetch_fund_gz(code: str, source_mode: str = "auto") -> Dict[str, Any]:
         resp.encoding = "utf-8"
         obj = _parse_jsonp_obj(resp.text)
         if not obj:
-            fb = _fallback_quote_from_settled_nav(c)
-            if fb.get("ok"):
-                _FUNDGZ_CACHE[cache_key] = (now, fb)
-                return fb
+            if mode != "estimate":
+                fb = _fallback_quote_from_settled_nav(c)
+                if fb.get("ok"):
+                    _FUNDGZ_CACHE[cache_key] = (now, fb)
+                    return fb
             out = {"ok": False, "error": "empty json"}
             _FUNDGZ_CACHE[cache_key] = (now, out)
             return out
@@ -842,10 +854,11 @@ def fetch_fund_gz(code: str, source_mode: str = "auto") -> Dict[str, Any]:
         return out
 
     except Exception as e:
-        fb = _fallback_quote_from_settled_nav(c)
-        if fb.get("ok"):
-            _FUNDGZ_CACHE[cache_key] = (now, fb)
-            return fb
+        if mode != "estimate":
+            fb = _fallback_quote_from_settled_nav(c)
+            if fb.get("ok"):
+                _FUNDGZ_CACHE[cache_key] = (now, fb)
+                return fb
         out = {"ok": False, "error": f"{type(e).__name__}: {e}"}
         _FUNDGZ_CACHE[cache_key] = (now, out)
         return out
