@@ -392,8 +392,9 @@ def list_watchlist(user_id: int, quote_source: str = "auto") -> List[Dict[str, A
     except Exception:
         fetch_fund_gz = None
 
+    # Default ON: when live sentiment flow_pct is missing/failed, try robust fallback map.
     sector_pct_fallback_enabled = (
-        os.getenv("WATCHLIST_SECTOR_PCT_FALLBACK", "0").strip() == "1"
+        os.getenv("WATCHLIST_SECTOR_PCT_FALLBACK", "1").strip() == "1"
     )
     sector_pct_fallback_map: Dict[str, float] = {}
 
@@ -808,8 +809,9 @@ def analyze_fund(
         "level": "中性",
         "comment": "暂未获取到板块情绪数据。",
     }
+    # Default ON: always try to provide sector sentiment in analysis page.
     sector_live_enabled = (
-        os.getenv("WATCHLIST_ANALYZE_SECTOR_LIVE", "0").strip() == "1"
+        os.getenv("WATCHLIST_ANALYZE_SECTOR_LIVE", "1").strip() == "1"
     )
     if sector_live_enabled and callable(get_sector_sentiment):
         try:
