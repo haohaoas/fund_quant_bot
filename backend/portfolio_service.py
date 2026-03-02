@@ -315,29 +315,15 @@ def _is_nav_settled(gz: Dict[str, Any]) -> bool:
     jzrq_date = _parse_local_date(gz.get("jzrq"))
     if jzrq_date is None:
         return False
-
-    def _prev_trade_day(d):
-        cur = d - timedelta(days=1)
-        while cur.weekday() >= 5:
-            cur -= timedelta(days=1)
-        return cur
-
-    def _latest_expected_settled_date(now_dt: datetime):
-        today = now_dt.date()
-        # 周末/休市日：最新净值应至少到最近交易日
-        if today.weekday() >= 5:
-            cur = today
-            while cur.weekday() >= 5:
-                cur -= timedelta(days=1)
-            return cur
-        # 交易日晚间（默认20:00后）才期望“T日净值”可见
-        if now_dt.hour >= 20:
-            return today
-        # 白天/傍晚：只期望到上一交易日
-        return _prev_trade_day(today)
-
-    expected = _latest_expected_settled_date(datetime.now())
-    return jzrq_date >= expected
+    now_dt = datetime.now()
+    today = now_dt.date()
+    # 仅在交易日晚间才展示“已更新”。
+    # 白天不展示，避免把“上一交易日净值”误判为已更新。
+    if today.weekday() >= 5:
+        return False
+    if now_dt.hour < 20:
+        return False
+    return jzrq_date >= today
 
 
 def _fetch_settled_nav_snapshot(code: str, jzrq: str) -> Dict[str, Any]:
