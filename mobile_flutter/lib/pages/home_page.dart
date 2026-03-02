@@ -2831,6 +2831,8 @@ class _FundAnalysisPageState extends State<_FundAnalysisPage> {
   FundAnalysis? _analysis;
   String? _error;
   bool _loading = false;
+  bool _aiLoading = false;
+  int _loadSeq = 0;
 
   @override
   void initState() {
@@ -2839,24 +2841,52 @@ class _FundAnalysisPageState extends State<_FundAnalysisPage> {
   }
 
   Future<void> _load() async {
+    final int seq = ++_loadSeq;
     setState(() {
       _loading = true;
+      _aiLoading = false;
       _error = null;
     });
     try {
-      final result = await widget.apiClient.analyzeWatchFund(
+      final quickResult = await widget.apiClient.analyzeWatchFund(
         code: widget.code,
         name: widget.name,
         quoteSource: widget.quoteSource,
+        includeAi: false,
       );
-      if (!mounted) {
+      if (!mounted || seq != _loadSeq) {
         return;
       }
       setState(() {
-        _analysis = result;
+        _analysis = quickResult;
+        _loading = false;
+        _aiLoading = true;
       });
+
+      try {
+        final fullResult = await widget.apiClient.analyzeWatchFund(
+          code: widget.code,
+          name: widget.name,
+          quoteSource: widget.quoteSource,
+          includeAi: true,
+        );
+        if (!mounted || seq != _loadSeq) {
+          return;
+        }
+        setState(() {
+          _analysis = fullResult;
+          _aiLoading = false;
+        });
+      } catch (_) {
+        if (!mounted || seq != _loadSeq) {
+          return;
+        }
+        setState(() {
+          _aiLoading = false;
+        });
+      }
     } catch (error) {
-      if (!mounted) {
+      if (!mounted || seq != _loadSeq) {
         return;
       }
       String message = error.toString();
@@ -2865,9 +2895,10 @@ class _FundAnalysisPageState extends State<_FundAnalysisPage> {
       }
       setState(() {
         _error = message;
+        _aiLoading = false;
       });
     } finally {
-      if (mounted) {
+      if (mounted && seq == _loadSeq) {
         setState(() {
           _loading = false;
         });
@@ -3014,6 +3045,18 @@ class _FundAnalysisPageState extends State<_FundAnalysisPage> {
                             Text(analysis.aiReason.isEmpty
                                 ? "暂无解释"
                                 : analysis.aiReason),
+                            if (_aiLoading) ...[
+                              const SizedBox(height: 10),
+                              const LinearProgressIndicator(minHeight: 2),
+                              const SizedBox(height: 6),
+                              const Text(
+                                "AI 分析更新中...",
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Color(0xFF6C7387),
+                                ),
+                              ),
+                            ],
                           ],
                         ),
                       ),

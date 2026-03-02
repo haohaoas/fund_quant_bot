@@ -52,6 +52,7 @@ def analyze_watchlist_fund(
     code: str,
     name: Optional[str] = None,
     quote_source: str = "auto",
+    include_ai: bool = True,
     user: Dict[str, Any] = Depends(get_current_user),
 ):
     _ = user
@@ -60,6 +61,7 @@ def analyze_watchlist_fund(
             code=code,
             name=name or "",
             quote_source=quote_source,
+            include_ai=include_ai,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

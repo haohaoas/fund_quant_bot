@@ -566,7 +566,12 @@ def remove_watchlist(user_id: int, code: str) -> bool:
     return int(cur.rowcount or 0) > 0
 
 
-def analyze_fund(code: str, name: str = "", quote_source: str = "auto") -> Dict[str, Any]:
+def analyze_fund(
+    code: str,
+    name: str = "",
+    quote_source: str = "auto",
+    include_ai: bool = True,
+) -> Dict[str, Any]:
     c = _norm_code(code)
     source_mode = _norm_quote_source_mode(quote_source)
     display_name = str(name or "").strip()
@@ -709,10 +714,10 @@ def analyze_fund(code: str, name: str = "", quote_source: str = "auto") -> Dict[
         except Exception:
             pass
 
-    ai_enabled = os.getenv("WATCHLIST_ANALYZE_USE_AI", "1").strip() == "1"
+    ai_enabled = include_ai and (os.getenv("WATCHLIST_ANALYZE_USE_AI", "1").strip() == "1")
     ai: Dict[str, Any] = {
         "action": str(signal.get("action") or "HOLD"),
-        "reason": "AI 分析未开启，已采用策略信号。",
+        "reason": "AI 分析处理中，稍后更新。",
     }
     if ai_enabled and callable(ask_deepseek_fund_decision):
         try:

@@ -359,12 +359,14 @@ class ApiClient {
     required String code,
     String name = "",
     String quoteSource = "auto",
+    bool includeAi = true,
   }) async {
     final source = _normalizeQuoteSource(quoteSource);
     final uri = Uri.parse("$baseUrl/api/watchlist/analyze").replace(
       queryParameters: <String, String>{
         "code": code.trim(),
         "quote_source": source,
+        "include_ai": includeAi ? "1" : "0",
         if (name.trim().isNotEmpty) "name": name.trim(),
       },
     );
