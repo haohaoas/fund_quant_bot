@@ -1293,6 +1293,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           code: code,
           name: name,
           quoteSource: _quoteSourceMode,
+          position: position,
+          accountTotalAsset: _portfolio?.account.totalAsset,
         ),
       ),
     );
@@ -3680,12 +3682,16 @@ class _FundTrendPage extends StatefulWidget {
     required this.code,
     required this.name,
     required this.quoteSource,
+    required this.position,
+    required this.accountTotalAsset,
   });
 
   final ApiClient apiClient;
   final String code;
   final String name;
   final String quoteSource;
+  final PortfolioPosition position;
+  final double? accountTotalAsset;
 
   @override
   State<_FundTrendPage> createState() => _FundTrendPageState();
@@ -3695,6 +3701,9 @@ class _FundTrendPageState extends State<_FundTrendPage> {
   FundTrendResponse? _trend;
   String? _error;
   bool _loading = false;
+  int _sectionTab = 0;
+  final NumberFormat _moneyFmt = NumberFormat("#,##0.00");
+  static const List<String> _sectionTabs = <String>["关联板块", "业绩走势", "我的收益"];
 
   @override
   void initState() {
@@ -3747,18 +3756,71 @@ class _FundTrendPageState extends State<_FundTrendPage> {
     }
   }
 
-  String _fmtNum(double value, {int digits = 4}) {
-    return value.toStringAsFixed(digits);
+  String _fmtNum(double value, {int digits = 4}) =>
+      value.toStringAsFixed(digits);
+
+  String _fmtMoney(double? value) {
+    if (value == null) {
+      return "--";
+    }
+    return _moneyFmt.format(value);
   }
 
-  Widget _metric(String label, String value, {Color? color}) {
+  String _fmtPct(double? value) {
+    if (value == null) {
+      return "--";
+    }
+    return "${value >= 0 ? "+" : ""}${value.toStringAsFixed(2)}%";
+  }
+
+  TextStyle _signedStyle(double? value, {double size = 13}) {
+    final color =
+        (value ?? 0) >= 0 ? const Color(0xFFDE4C54) : const Color(0xFF17A34A);
+    return TextStyle(
+      color: color,
+      fontSize: size,
+      fontWeight: FontWeight.w700,
+    );
+  }
+
+  Widget _gridMetric(
+    String label,
+    String value, {
+    TextStyle? valueStyle,
+  }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
           label,
           style: const TextStyle(
+            fontSize: 13,
             color: Color(0xFF7B8599),
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        const SizedBox(height: 5),
+        Text(
+          value,
+          style: valueStyle ??
+              const TextStyle(
+                fontSize: 16,
+                color: Color(0xFF1F2A44),
+                fontWeight: FontWeight.w700,
+              ),
+        ),
+      ],
+    );
+  }
+
+  Widget _summaryMetric(String label, String value, {TextStyle? valueStyle}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            color: Color(0xFF66728C),
             fontSize: 12,
             fontWeight: FontWeight.w600,
           ),
@@ -3766,19 +3828,242 @@ class _FundTrendPageState extends State<_FundTrendPage> {
         const SizedBox(height: 4),
         Text(
           value,
-          style: TextStyle(
-            color: color ?? const Color(0xFF1F2A44),
-            fontSize: 16,
-            fontWeight: FontWeight.w800,
-          ),
+          style: valueStyle ??
+              const TextStyle(
+                color: Color(0xFF1F2A44),
+                fontSize: 16,
+                fontWeight: FontWeight.w800,
+              ),
         ),
       ],
+    );
+  }
+
+  Widget _buildTopHero({
+    required String title,
+    required String code,
+  }) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(16),
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF2254E6), Color(0xFF2E67FF)],
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 21,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            code,
+            style: const TextStyle(
+              color: Color(0xFFD9E6FF),
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(10),
+              color: const Color(0x24FFFFFF),
+              border: Border.all(color: const Color(0x3DFFFFFF)),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.auto_graph_rounded, size: 14, color: Colors.white),
+                SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    "自选风向标 | 今日加自选榜",
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSectionTabs() {
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF1F4FA),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        children: List.generate(_sectionTabs.length, (index) {
+          final active = _sectionTab == index;
+          return Expanded(
+            child: InkWell(
+              borderRadius: BorderRadius.circular(8),
+              onTap: () {
+                setState(() {
+                  _sectionTab = index;
+                });
+              },
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                decoration: BoxDecoration(
+                  color: active ? Colors.white : Colors.transparent,
+                  borderRadius: BorderRadius.circular(8),
+                  boxShadow: active
+                      ? const [
+                          BoxShadow(
+                            color: Color(0x12000000),
+                            blurRadius: 6,
+                            offset: Offset(0, 2),
+                          )
+                        ]
+                      : const [],
+                ),
+                child: Text(
+                  _sectionTabs[index],
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: active
+                        ? const Color(0xFF1F2A44)
+                        : const Color(0xFF7B8599),
+                  ),
+                ),
+              ),
+            ),
+          );
+        }),
+      ),
+    );
+  }
+
+  Widget _buildTrendChartCard(List<FundTrendPoint> points) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(10, 10, 10, 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE7EBF3)),
+      ),
+      child: Column(
+        children: [
+          SizedBox(
+            height: 220,
+            width: double.infinity,
+            child: CustomPaint(
+              painter: _FundTrendPainter(points: points),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Text(
+                points.first.time,
+                style: const TextStyle(
+                  color: Color(0xFF7B8599),
+                  fontSize: 12,
+                ),
+              ),
+              const Spacer(),
+              Text(
+                points[(points.length / 2).floor()].time,
+                style: const TextStyle(
+                  color: Color(0xFF7B8599),
+                  fontSize: 12,
+                ),
+              ),
+              const Spacer(),
+              Text(
+                points.last.time,
+                style: const TextStyle(
+                  color: Color(0xFF7B8599),
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildActionBar() {
+    Widget button(IconData icon, String text) {
+      return Expanded(
+        child: InkWell(
+          onTap: () {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text("$text 功能开发中")),
+            );
+          },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, size: 21, color: const Color(0xFF2A344E)),
+                const SizedBox(height: 4),
+                Text(
+                  text,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF2A344E),
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        border: Border(top: BorderSide(color: Color(0xFFE7EBF3))),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Row(
+          children: [
+            button(Icons.edit_note_rounded, "修改持仓"),
+            button(Icons.notifications_active_outlined, "提醒"),
+            button(Icons.event_note_rounded, "交易记录"),
+            button(Icons.remove_circle_outline_rounded, "删自选"),
+            button(Icons.more_horiz_rounded, "更多"),
+          ],
+        ),
+      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
     final title = widget.name.trim().isEmpty ? widget.code : widget.name.trim();
+    final p = widget.position;
     final trend = _trend;
     final points = trend?.points ?? const <FundTrendPoint>[];
     final hasData = points.isNotEmpty;
@@ -3788,6 +4073,11 @@ class _FundTrendPageState extends State<_FundTrendPage> {
     String latestTime = "--";
     double minNav = 0;
     double maxNav = 0;
+    final holdAmount = p.marketValue;
+    final holdRatio =
+        (holdAmount != null && (widget.accountTotalAsset ?? 0) > 0)
+            ? holdAmount / (widget.accountTotalAsset ?? 1) * 100
+            : null;
     if (hasData) {
       latestNav = points.last.nav;
       latestPct = points.last.pct ?? 0;
@@ -3799,7 +4089,28 @@ class _FundTrendPageState extends State<_FundTrendPage> {
     return Scaffold(
       backgroundColor: const Color(0xFFF3F5F9),
       appBar: AppBar(
-        title: Text("$title 走势"),
+        backgroundColor: const Color(0xFF275BEB),
+        foregroundColor: Colors.white,
+        elevation: 0,
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+            ),
+            Text(
+              widget.code,
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+                color: Color(0xFFD9E6FF),
+              ),
+            ),
+          ],
+        ),
         actions: [
           IconButton(
             onPressed: _loading ? null : _load,
@@ -3807,6 +4118,7 @@ class _FundTrendPageState extends State<_FundTrendPage> {
           ),
         ],
       ),
+      bottomNavigationBar: _buildActionBar(),
       body: _loading && !hasData
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(
@@ -3817,6 +4129,8 @@ class _FundTrendPageState extends State<_FundTrendPage> {
                 ),
                 padding: const EdgeInsets.fromLTRB(12, 12, 12, 22),
                 children: [
+                  _buildTopHero(title: title, code: widget.code),
+                  const SizedBox(height: 10),
                   if (_error != null && _error!.isNotEmpty)
                     Container(
                       margin: const EdgeInsets.only(bottom: 10),
@@ -3848,78 +4162,207 @@ class _FundTrendPageState extends State<_FundTrendPage> {
                     )
                   else ...[
                     Container(
-                      padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
+                      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
                       decoration: BoxDecoration(
                         color: Colors.white,
                         borderRadius: BorderRadius.circular(14),
                         border: Border.all(color: const Color(0xFFE7EBF3)),
                       ),
-                      child: Wrap(
-                        spacing: 16,
-                        runSpacing: 10,
+                      child: Row(
                         children: [
-                          _metric("最新估值", _fmtNum(latestNav)),
-                          _metric(
-                            "涨跌幅",
-                            "${latestPct >= 0 ? "+" : ""}${latestPct.toStringAsFixed(2)}%",
-                            color: latestPct >= 0
-                                ? const Color(0xFFDE4C54)
-                                : const Color(0xFF17A34A),
+                          Expanded(
+                            child: _summaryMetric(
+                              "当日涨幅",
+                              _fmtPct(latestPct),
+                              valueStyle: _signedStyle(latestPct, size: 15),
+                            ),
                           ),
-                          _metric("更新时间", latestTime),
-                          _metric("最低", _fmtNum(minNav)),
-                          _metric("最高", _fmtNum(maxNav)),
+                          Expanded(
+                            child: _summaryMetric(
+                              "最新估值",
+                              _fmtNum(latestNav),
+                              valueStyle: const TextStyle(
+                                color: Color(0xFF1F2A44),
+                                fontSize: 15,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ),
+                          Expanded(
+                            child: _summaryMetric(
+                              "更新时间",
+                              latestTime,
+                              valueStyle: const TextStyle(
+                                color: Color(0xFF1F2A44),
+                                fontSize: 15,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ),
                         ],
                       ),
                     ),
                     const SizedBox(height: 10),
                     Container(
-                      padding: const EdgeInsets.fromLTRB(10, 10, 10, 12),
+                      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
                       decoration: BoxDecoration(
                         color: Colors.white,
                         borderRadius: BorderRadius.circular(14),
                         border: Border.all(color: const Color(0xFFE7EBF3)),
                       ),
-                      child: Column(
+                      child: GridView.count(
+                        crossAxisCount: 3,
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        childAspectRatio: 2.25,
+                        mainAxisSpacing: 8,
+                        crossAxisSpacing: 10,
                         children: [
-                          SizedBox(
-                            height: 220,
-                            width: double.infinity,
-                            child: CustomPaint(
-                              painter: _FundTrendPainter(points: points),
-                            ),
+                          _gridMetric("持有金额", _fmtMoney(holdAmount)),
+                          _gridMetric("持有份额", _fmtNum(p.shares, digits: 2)),
+                          _gridMetric("持仓占比", _fmtPct(holdRatio)),
+                          _gridMetric(
+                            "持有收益",
+                            p.holdingProfit == null
+                                ? "--"
+                                : "${(p.holdingProfit ?? 0) >= 0 ? "+" : ""}${_fmtMoney(p.holdingProfit)}",
+                            valueStyle: _signedStyle(p.holdingProfit),
                           ),
-                          const SizedBox(height: 6),
-                          Row(
-                            children: [
-                              Text(
-                                points.first.time,
-                                style: const TextStyle(
-                                  color: Color(0xFF7B8599),
-                                  fontSize: 12,
-                                ),
-                              ),
-                              const Spacer(),
-                              Text(
-                                points[(points.length / 2).floor()].time,
-                                style: const TextStyle(
-                                  color: Color(0xFF7B8599),
-                                  fontSize: 12,
-                                ),
-                              ),
-                              const Spacer(),
-                              Text(
-                                points.last.time,
-                                style: const TextStyle(
-                                  color: Color(0xFF7B8599),
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ],
+                          _gridMetric(
+                            "持有收益率",
+                            _fmtPct(p.holdingProfitPct),
+                            valueStyle: _signedStyle(p.holdingProfitPct),
                           ),
+                          _gridMetric("持仓成本", _fmtNum(p.cost)),
+                          _gridMetric(
+                            "当日收益",
+                            p.dailyProfit == null
+                                ? "--"
+                                : "${(p.dailyProfit ?? 0) >= 0 ? "+" : ""}${_fmtMoney(p.dailyProfit)}",
+                            valueStyle: _signedStyle(p.dailyProfit),
+                          ),
+                          _gridMetric("昨日收益", "--"),
+                          _gridMetric("持有天数", "--"),
                         ],
                       ),
                     ),
+                    const SizedBox(height: 10),
+                    _buildSectionTabs(),
+                    const SizedBox(height: 10),
+                    if (_sectionTab == 0) ...[
+                      _buildTrendChartCard(points),
+                      const SizedBox(height: 10),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 11,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0xFFE7EBF3)),
+                        ),
+                        child: Row(
+                          children: [
+                            const Text(
+                              "关联板块",
+                              style: TextStyle(
+                                color: Color(0xFF1F2A44),
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            const Spacer(),
+                            Text(
+                              p.sector.isEmpty ? "未知板块" : p.sector,
+                              style: const TextStyle(
+                                color: Color(0xFF1F2A44),
+                                fontSize: 15,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              _fmtPct(p.sectorPct),
+                              style: _signedStyle(p.sectorPct),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ] else if (_sectionTab == 1) ...[
+                      _buildTrendChartCard(points),
+                      const SizedBox(height: 10),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 10,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0xFFE7EBF3)),
+                        ),
+                        child: Row(
+                          children: [
+                            _summaryMetric("日内最低", _fmtNum(minNav)),
+                            const Spacer(),
+                            _summaryMetric("日内最高", _fmtNum(maxNav)),
+                          ],
+                        ),
+                      ),
+                    ] else ...[
+                      _buildTrendChartCard(points),
+                      const SizedBox(height: 10),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0xFFE7EBF3)),
+                        ),
+                        child: Column(
+                          children: [
+                            Row(
+                              children: [
+                                const Text(
+                                  "累计收益",
+                                  style: TextStyle(
+                                    color: Color(0xFF7B8599),
+                                    fontSize: 13,
+                                  ),
+                                ),
+                                const Spacer(),
+                                Text(
+                                  p.holdingProfit == null
+                                      ? "--"
+                                      : "${(p.holdingProfit ?? 0) >= 0 ? "+" : ""}${_fmtMoney(p.holdingProfit)}",
+                                  style:
+                                      _signedStyle(p.holdingProfit, size: 16),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                const Text(
+                                  "累计收益率",
+                                  style: TextStyle(
+                                    color: Color(0xFF7B8599),
+                                    fontSize: 13,
+                                  ),
+                                ),
+                                const Spacer(),
+                                Text(
+                                  _fmtPct(p.holdingProfitPct),
+                                  style: _signedStyle(p.holdingProfitPct,
+                                      size: 16),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 10),
                     Container(
                       padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
@@ -3937,6 +4380,7 @@ class _FundTrendPageState extends State<_FundTrendPage> {
                         ),
                       ),
                     ),
+                    const SizedBox(height: 28),
                   ],
                 ],
               ),
