@@ -339,7 +339,7 @@ def _match_sector_pct_from_fallback(
 
 def _build_signal_from_sector_info(sector_info: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Build watchlist analysis signal from sector sentiment instead of fund NAV/grid.
+    Build watchlist analysis signal from sector pct (primary) + sentiment score (fallback).
     """
     sector_name = str(sector_info.get("sector") or "").strip()
     score = _to_float_or_none(sector_info.get("score"))
@@ -347,7 +347,11 @@ def _build_signal_from_sector_info(sector_info: Dict[str, Any]) -> Dict[str, Any
     flow_pct = _to_float_or_none(
         sector_info.get("flow_pct")
         if sector_info.get("flow_pct") is not None
-        else sector_info.get("pct")
+        else (
+            sector_info.get("sector_pct")
+            if sector_info.get("sector_pct") is not None
+            else sector_info.get("pct")
+        )
     )
 
     if not sector_name or sector_name == "未知板块":
@@ -362,48 +366,64 @@ def _build_signal_from_sector_info(sector_info: Dict[str, Any]) -> Dict[str, Any
         }
 
     reason_parts: List[str] = [f"板块「{sector_name}」"]
+    if flow_pct is not None:
+        reason_parts.append(f"涨跌幅 {flow_pct:.2f}%")
     if score is not None:
         reason_parts.append(f"情绪分 {score:.1f}")
     if level:
         reason_parts.append(f"级别 {level}")
-    if flow_pct is not None:
-        reason_parts.append(f"资金流涨跌 {flow_pct:.2f}%")
     prefix = "，".join(reason_parts)
 
-    strong = False
-    weak = False
-    if score is not None:
-        if score >= 72:
-            strong = True
-        elif score <= 38:
-            weak = True
+    # Primary: sector pct (what user calls sector net-value change).
     if flow_pct is not None:
-        if flow_pct >= 2.0:
-            strong = True
-        elif flow_pct <= -2.0:
-            weak = True
-    if ("强" in level or "偏强" in level) and "偏弱" not in level:
-        strong = True
-    if "弱" in level or "偏弱" in level:
-        weak = True
+        if flow_pct >= 1.5:
+            return {
+                "action": "BUY",
+                "position_hint": "ADD",
+                "hit_level": None,
+                "price_vs_base_pct": None,
+                "reason": f"{prefix}，板块上行明显，优先顺势布局。",
+                "grids": [],
+                "base_price": None,
+            }
+        if flow_pct <= -1.5:
+            return {
+                "action": "SELL",
+                "position_hint": "REDUCE",
+                "hit_level": None,
+                "price_vs_base_pct": None,
+                "reason": f"{prefix}，板块下行明显，优先控制回撤。",
+                "grids": [],
+                "base_price": None,
+            }
+        return {
+            "action": "HOLD",
+            "position_hint": "KEEP",
+            "hit_level": None,
+            "price_vs_base_pct": None,
+            "reason": f"{prefix}，板块波动温和，暂以持有观察为主。",
+            "grids": [],
+            "base_price": None,
+        }
 
-    if strong and not weak:
+    # Fallback: sentiment score when pct is unavailable.
+    if score is not None and score >= 72:
         return {
             "action": "BUY",
             "position_hint": "ADD",
             "hit_level": None,
             "price_vs_base_pct": None,
-            "reason": f"{prefix}，板块偏强，优先顺势低吸。",
+            "reason": f"{prefix}，暂无板块涨跌幅，按情绪分偏强处理。",
             "grids": [],
             "base_price": None,
         }
-    if weak and not strong:
+    if score is not None and score <= 38:
         return {
             "action": "SELL",
             "position_hint": "REDUCE",
             "hit_level": None,
             "price_vs_base_pct": None,
-            "reason": f"{prefix}，板块偏弱，优先控制仓位。",
+            "reason": f"{prefix}，暂无板块涨跌幅，按情绪分偏弱处理。",
             "grids": [],
             "base_price": None,
         }
@@ -412,10 +432,10 @@ def _build_signal_from_sector_info(sector_info: Dict[str, Any]) -> Dict[str, Any
         "position_hint": "KEEP",
         "hit_level": None,
         "price_vs_base_pct": None,
-        "reason": f"{prefix}，板块信号中性，暂以持有观察为主。",
-        "grids": [],
-        "base_price": None,
-    }
+            "reason": f"{prefix}，板块信号中性，暂以持有观察为主。",
+            "grids": [],
+            "base_price": None,
+        }
 
 
 def list_watchlist(user_id: int, quote_source: str = "auto") -> List[Dict[str, Any]]:
@@ -855,6 +875,23 @@ def analyze_fund(
                     "comment": str(raw_sector_info.get("comment") or ""),
                     "flow_pct": _to_float_or_none(raw_sector_info.get("flow_pct")),
                 }
+        except Exception:
+            pass
+
+    # Fallback resolve sector pct from full board lists/flow lists.
+    if (
+        sector_info.get("sector")
+        and str(sector_info.get("sector") or "").strip() != "未知板块"
+        and _to_float_or_none(sector_info.get("flow_pct")) is None
+    ):
+        try:
+            fallback_map = _build_sector_pct_fallback_map()
+            fallback_pct = _match_sector_pct_from_fallback(
+                str(sector_info.get("sector") or "").strip(),
+                fallback_map,
+            )
+            if fallback_pct is not None:
+                sector_info["flow_pct"] = fallback_pct
         except Exception:
             pass
 
