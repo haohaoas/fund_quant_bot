@@ -11,6 +11,8 @@ init_db()
 
 _SECTOR_PCT_FALLBACK_CACHE: Dict[str, Any] = {"ts": 0.0, "data": {}}
 _SECTOR_PCT_FALLBACK_TTL_SECONDS = 120
+_SECTOR_GRID_STEP_PCT = float(os.getenv("WATCHLIST_SECTOR_GRID_STEP_PCT", "0.5"))
+_SECTOR_GRID_LEVELS = int(os.getenv("WATCHLIST_SECTOR_GRID_LEVELS", "4"))
 
 
 def _norm_user_id(user_id: int) -> int:
@@ -374,35 +376,54 @@ def _build_signal_from_sector_info(sector_info: Dict[str, Any]) -> Dict[str, Any
         reason_parts.append(f"级别 {level}")
     prefix = "，".join(reason_parts)
 
-    # Primary: sector pct (what user calls sector net-value change).
+    # Sector dynamic grid (primary): signal from sector pct.
+    step = _SECTOR_GRID_STEP_PCT if _SECTOR_GRID_STEP_PCT > 0 else 0.5
+    levels = _SECTOR_GRID_LEVELS if _SECTOR_GRID_LEVELS > 0 else 4
+    grids: List[Dict[str, Any]] = []
+    for lv in range(1, levels + 1):
+        trigger = round(lv * step, 4)
+        grids.append(
+            {
+                "level": lv,
+                "up_trigger_pct": trigger,
+                "down_trigger_pct": -trigger,
+                "up_action": "BUY",
+                "down_action": "SELL",
+            }
+        )
+
     if flow_pct is not None:
-        if flow_pct >= 1.5:
+        abs_level = int(abs(flow_pct) // step)
+        if abs_level > levels:
+            abs_level = levels
+
+        if flow_pct > 0 and abs_level >= 1:
             return {
                 "action": "BUY",
                 "position_hint": "ADD",
-                "hit_level": None,
-                "price_vs_base_pct": None,
-                "reason": f"{prefix}，板块上行明显，优先顺势布局。",
-                "grids": [],
+                "hit_level": abs_level,
+                "price_vs_base_pct": flow_pct,
+                "reason": f"{prefix}，触发板块上行第 {abs_level} 层网格，建议顺势加仓。",
+                "grids": grids,
                 "base_price": None,
             }
-        if flow_pct <= -1.5:
+        if flow_pct < 0 and abs_level >= 1:
             return {
                 "action": "SELL",
                 "position_hint": "REDUCE",
-                "hit_level": None,
-                "price_vs_base_pct": None,
-                "reason": f"{prefix}，板块下行明显，优先控制回撤。",
-                "grids": [],
+                "hit_level": -abs_level,
+                "price_vs_base_pct": flow_pct,
+                "reason": f"{prefix}，触发板块下行第 {abs_level} 层网格，建议减仓控风险。",
+                "grids": grids,
                 "base_price": None,
             }
         return {
             "action": "HOLD",
             "position_hint": "KEEP",
-            "hit_level": None,
-            "price_vs_base_pct": None,
-            "reason": f"{prefix}，板块波动温和，暂以持有观察为主。",
-            "grids": [],
+            "hit_level": 0,
+            "price_vs_base_pct": flow_pct,
+            "reason": f"{prefix}，未触发板块网格阈值，暂以持有观察为主。",
+            "grids": grids,
             "base_price": None,
         }
 
@@ -414,7 +435,7 @@ def _build_signal_from_sector_info(sector_info: Dict[str, Any]) -> Dict[str, Any
             "hit_level": None,
             "price_vs_base_pct": None,
             "reason": f"{prefix}，暂无板块涨跌幅，按情绪分偏强处理。",
-            "grids": [],
+            "grids": grids,
             "base_price": None,
         }
     if score is not None and score <= 38:
@@ -424,7 +445,7 @@ def _build_signal_from_sector_info(sector_info: Dict[str, Any]) -> Dict[str, Any
             "hit_level": None,
             "price_vs_base_pct": None,
             "reason": f"{prefix}，暂无板块涨跌幅，按情绪分偏弱处理。",
-            "grids": [],
+            "grids": grids,
             "base_price": None,
         }
     return {
@@ -432,10 +453,10 @@ def _build_signal_from_sector_info(sector_info: Dict[str, Any]) -> Dict[str, Any
         "position_hint": "KEEP",
         "hit_level": None,
         "price_vs_base_pct": None,
-            "reason": f"{prefix}，板块信号中性，暂以持有观察为主。",
-            "grids": [],
-            "base_price": None,
-        }
+        "reason": f"{prefix}，板块信号中性，暂以持有观察为主。",
+        "grids": grids,
+        "base_price": None,
+    }
 
 
 def list_watchlist(user_id: int, quote_source: str = "auto") -> List[Dict[str, Any]]:
