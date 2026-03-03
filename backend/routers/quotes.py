@@ -29,3 +29,19 @@ def latest_quote(code: str):
     if not q:
         raise HTTPException(status_code=404, detail="no quote found")
     return q
+
+
+@router.get("/api/funds/trend")
+def fund_intraday_trend(
+    code: str,
+    quote_source: str = "auto",
+    max_points: int = 180,
+):
+    c = str(code or "").strip()
+    if not c:
+        raise HTTPException(status_code=400, detail="code required")
+    return ps.fetch_fund_intraday_trend(
+        c,
+        source_mode=quote_source,
+        max_points=max_points,
+    )

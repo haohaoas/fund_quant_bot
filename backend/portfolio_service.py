@@ -64,9 +64,13 @@ _FUND123_CONNECT_TIMEOUT_SECONDS = float(os.getenv("FUND123_CONNECT_TIMEOUT_SECO
 _FUND123_READ_TIMEOUT_SECONDS = float(os.getenv("FUND123_READ_TIMEOUT_SECONDS", "1.5"))
 _FUND123_BOOTSTRAP_TTL_SECONDS = float(os.getenv("FUND123_BOOTSTRAP_TTL_SECONDS", "1200"))
 _FUND123_KEY_TTL_SECONDS = float(os.getenv("FUND123_KEY_TTL_SECONDS", "86400"))
+_FUND123_FAIL_TTL_SECONDS = float(os.getenv("FUND123_FAIL_TTL_SECONDS", "45"))
+_FUND123_TREND_TTL_SECONDS = float(os.getenv("FUND123_TREND_TTL_SECONDS", "20"))
 _FUND123_STATE_LOCK = threading.Lock()
 _FUND123_STATE: Dict[str, Any] = {"ts": 0.0, "csrf": "", "session": None}
 _FUND123_KEY_CACHE: Dict[str, Tuple[float, str, str]] = {}
+_FUND123_FAIL_CACHE: Dict[str, float] = {}
+_FUND123_TREND_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 
 
 def clear_fund_gz_cache(code: Optional[str] = None) -> None:
@@ -75,8 +79,15 @@ def clear_fund_gz_cache(code: Optional[str] = None) -> None:
         keys = [k for k in _FUNDGZ_CACHE.keys() if str(k).startswith(f"{c}|")]
         for k in keys:
             _FUNDGZ_CACHE.pop(k, None)
+        cc = _norm_code6(c)
+        _FUND123_FAIL_CACHE.pop(cc, None)
+        trend_keys = [k for k in _FUND123_TREND_CACHE.keys() if str(k).startswith(f"{cc}|")]
+        for k in trend_keys:
+            _FUND123_TREND_CACHE.pop(k, None)
         return
     _FUNDGZ_CACHE.clear()
+    _FUND123_FAIL_CACHE.clear()
+    _FUND123_TREND_CACHE.clear()
 
 
 def _safe_float(x: Any) -> Optional[float]:
@@ -418,10 +429,15 @@ def _fetch_fund123_quote(code: str) -> Dict[str, Any]:
     c = _norm_code6(code)
     if not c:
         return {"ok": False, "error": "empty code"}
+    now = time.time()
+    last_fail = float(_FUND123_FAIL_CACHE.get(c) or 0.0)
+    if last_fail and (now - last_fail) <= _FUND123_FAIL_TTL_SECONDS:
+        return {"ok": False, "error": "fund123 recent fail cached"}
 
     meta = _fund123_search_meta(c)
     product_key = str(meta.get("key") or "").strip()
     if not product_key:
+        _FUND123_FAIL_CACHE[c] = now
         return {"ok": False, "error": "fund123 key not found"}
 
     for attempt in (0, 1):
@@ -505,7 +521,178 @@ def _fetch_fund123_quote(code: str) -> Dict[str, Any]:
             "source": "fund123_estimate",
         }
 
+    _FUND123_FAIL_CACHE[c] = now
     return {"ok": False, "error": "fund123 fetch failed"}
+
+
+def fetch_fund_intraday_trend(
+    code: str,
+    source_mode: str = "auto",
+    max_points: int = 180,
+) -> Dict[str, Any]:
+    c = _norm_code6(code)
+    if not c:
+        return {"ok": False, "error": "empty code", "points": []}
+    mode = _norm_quote_source_mode(source_mode)
+    try:
+        limit = int(max_points)
+    except Exception:
+        limit = 180
+    limit = max(30, min(limit, 300))
+
+    now = time.time()
+    cache_key = f"{c}|{mode}|{limit}"
+    cached = _FUND123_TREND_CACHE.get(cache_key)
+    if cached and (now - cached[0]) <= _FUND123_TREND_TTL_SECONDS:
+        return cached[1]
+
+    meta = _fund123_search_meta(c)
+    product_key = str(meta.get("key") or "").strip()
+    if not product_key:
+        out = {"ok": False, "error": "fund123 key not found", "code": c, "points": []}
+        _FUND123_TREND_CACHE[cache_key] = (now, out)
+        return out
+
+    points: List[Dict[str, Any]] = []
+    err = "fund123 fetch failed"
+    for attempt in (0, 1):
+        sess, csrf = _fund123_bootstrap(force_refresh=(attempt == 1))
+        if not isinstance(sess, requests.Session) or not csrf:
+            err = "fund123 bootstrap failed"
+            continue
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        body = {
+            "startTime": today,
+            "endTime": tomorrow,
+            "limit": limit,
+            "productId": product_key,
+            "format": True,
+            "source": "WEALTHBFFWEB",
+        }
+        try:
+            resp = sess.post(
+                "https://www.fund123.cn/api/fund/queryFundEstimateIntraday",
+                headers=_fund123_common_headers(json_api=True),
+                params={"_csrf": csrf},
+                json=body,
+                timeout=(
+                    _FUND123_CONNECT_TIMEOUT_SECONDS,
+                    _FUND123_READ_TIMEOUT_SECONDS,
+                ),
+                proxies={},
+            )
+            payload = resp.json()
+        except Exception as e:
+            err = f"fund123 request error: {type(e).__name__}: {e}"
+            continue
+
+        if not isinstance(payload, dict) or not payload.get("success"):
+            err = "fund123 non-success payload"
+            continue
+
+        rows = payload.get("list") or []
+        if not isinstance(rows, list) or not rows:
+            err = "fund123 empty list"
+            continue
+
+        tmp: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            nav = _safe_float(row.get("forecastNetValue"))
+            if nav is None:
+                nav = _safe_float(row.get("netValue"))
+            if nav is None:
+                continue
+
+            pct_raw = _safe_float(row.get("forecastGrowth"))
+            pct = None
+            if pct_raw is not None:
+                pct = float(pct_raw * 100.0) if abs(float(pct_raw)) <= 2 else float(pct_raw)
+
+            label = ""
+            ts_ms = None
+            try:
+                t = row.get("time")
+                if t is not None:
+                    ts = float(t)
+                    if ts > 1e12:
+                        ts = ts / 1000.0
+                        ts_ms = int(float(t))
+                    else:
+                        ts_ms = int(ts * 1000)
+                    dt = datetime.fromtimestamp(ts)
+                    label = dt.strftime("%H:%M")
+            except Exception:
+                label = ""
+
+            if not label:
+                label = str(row.get("timeLabel") or "").strip()
+            if not label:
+                continue
+
+            tmp[label] = {
+                "time": label,
+                "nav": round(float(nav), 6),
+                "pct": round(float(pct), 2) if pct is not None else None,
+                "ts": ts_ms,
+            }
+
+        points = list(tmp.values())
+        if points:
+            points.sort(key=lambda x: int(x.get("ts") or 0))
+            break
+
+    if not points:
+        latest = fetch_fund_gz(c, source_mode=mode)
+        nav = _safe_float((latest or {}).get("nav"))
+        pct = _safe_float((latest or {}).get("daily_change_pct"))
+        if nav is not None:
+            t = str((latest or {}).get("gztime") or "").strip()
+            label = t[-5:] if len(t) >= 5 else datetime.now().strftime("%H:%M")
+            points = [
+                {
+                    "time": label,
+                    "nav": round(float(nav), 6),
+                    "pct": round(float(pct), 2) if pct is not None else None,
+                    "ts": int(time.time() * 1000),
+                }
+            ]
+            out = {
+                "ok": True,
+                "code": c,
+                "name": str((latest or {}).get("name") or meta.get("name") or "").strip(),
+                "source": str((latest or {}).get("source") or "fallback_latest"),
+                "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "points": points,
+            }
+            _FUND123_TREND_CACHE[cache_key] = (now, out)
+            return out
+
+        out = {
+            "ok": False,
+            "error": err,
+            "code": c,
+            "name": str(meta.get("name") or "").strip(),
+            "source": "fund123_estimate",
+            "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "points": [],
+        }
+        _FUND123_TREND_CACHE[cache_key] = (now, out)
+        return out
+
+    out = {
+        "ok": True,
+        "code": c,
+        "name": str(meta.get("name") or "").strip(),
+        "source": "fund123_estimate",
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "points": points,
+    }
+    _FUND123_TREND_CACHE[cache_key] = (now, out)
+    return out
 
 
 def _parse_local_date(value: Any):

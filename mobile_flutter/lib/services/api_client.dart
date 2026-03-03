@@ -85,6 +85,91 @@ class FundSearchResult {
   String get displayName => name.isEmpty ? code : "$name ($code)";
 }
 
+class FundTrendPoint {
+  const FundTrendPoint({
+    required this.time,
+    required this.nav,
+    required this.pct,
+    required this.ts,
+  });
+
+  final String time;
+  final double nav;
+  final double? pct;
+  final int? ts;
+
+  factory FundTrendPoint.fromJson(Map<String, dynamic> json) {
+    double? parseNullableDouble(dynamic value) {
+      if (value == null) {
+        return null;
+      }
+      if (value is num) {
+        return value.toDouble();
+      }
+      return double.tryParse(value.toString());
+    }
+
+    int? parseNullableInt(dynamic value) {
+      if (value == null) {
+        return null;
+      }
+      if (value is int) {
+        return value;
+      }
+      if (value is num) {
+        return value.toInt();
+      }
+      return int.tryParse(value.toString());
+    }
+
+    return FundTrendPoint(
+      time: (json["time"] ?? "").toString(),
+      nav: (json["nav"] is num)
+          ? (json["nav"] as num).toDouble()
+          : double.tryParse((json["nav"] ?? "").toString()) ?? 0,
+      pct: parseNullableDouble(json["pct"]),
+      ts: parseNullableInt(json["ts"]),
+    );
+  }
+}
+
+class FundTrendResponse {
+  const FundTrendResponse({
+    required this.ok,
+    required this.code,
+    required this.name,
+    required this.source,
+    required this.generatedAt,
+    required this.points,
+    required this.error,
+  });
+
+  final bool ok;
+  final String code;
+  final String name;
+  final String source;
+  final String generatedAt;
+  final List<FundTrendPoint> points;
+  final String error;
+
+  factory FundTrendResponse.fromJson(Map<String, dynamic> json) {
+    final points = (json["points"] as List? ?? [])
+        .whereType<Map>()
+        .map((item) => FundTrendPoint.fromJson(item.cast<String, dynamic>()))
+        .toList();
+
+    return FundTrendResponse(
+      ok: json["ok"] == true,
+      code: (json["code"] ?? "").toString(),
+      name: (json["name"] ?? "").toString(),
+      source: (json["source"] ?? "").toString(),
+      generatedAt: (json["generated_at"] ?? "").toString(),
+      points: points,
+      error: (json["error"] ?? "").toString(),
+    );
+  }
+}
+
 class ApiClient {
   ApiClient({
     required this.baseUrl,
@@ -377,6 +462,27 @@ class ApiClient {
     _ensureSuccess(response, uri);
     final payload = _decodeMap(response.body);
     return PortfolioResponse.fromJson(payload);
+  }
+
+  Future<FundTrendResponse> fetchFundTrend({
+    required String code,
+    String quoteSource = "auto",
+    int maxPoints = 180,
+  }) async {
+    final source = _normalizeQuoteSource(quoteSource);
+    final uri = Uri.parse("$baseUrl/api/funds/trend").replace(
+      queryParameters: <String, String>{
+        "code": code.trim(),
+        "quote_source": source,
+        "max_points": "$maxPoints",
+      },
+    );
+    final response = await _client
+        .get(uri, headers: _backendHeaders())
+        .timeout(_requestTimeout);
+    _ensureSuccess(response, uri);
+    final payload = _decodeMap(response.body);
+    return FundTrendResponse.fromJson(payload);
   }
 
   Future<List<AppAccount>> fetchAccounts() async {

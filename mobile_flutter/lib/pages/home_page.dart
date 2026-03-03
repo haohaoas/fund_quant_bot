@@ -1,5 +1,6 @@
 import "dart:async";
 import "dart:convert";
+import "dart:math" as math;
 
 import "package:flutter/material.dart";
 import "package:flutter/services.dart";
@@ -127,7 +128,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final Set<String> _deletingPositionCodes = <String>{};
   Timer? _autoRefreshTimer;
   bool _autoRefreshInFlight = false;
-  String _quoteSourceMode = "fund123";
+  String _quoteSourceMode = "estimate";
 
   @override
   void initState() {
@@ -990,7 +991,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       case "settled":
         return "数据源3";
       default:
-        return "数据源1";
+        return "数据源2";
     }
   }
 
@@ -1002,7 +1003,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       final mode =
           (saved == "estimate" || saved == "settled" || saved == "fund123")
               ? saved
-              : "fund123";
+              : "estimate";
       if (!mounted) {
         return;
       }
@@ -1277,6 +1278,24 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
     // Keep item in place and let refreshed data source update the list.
     return false;
+  }
+
+  Future<void> _openHoldingTrend(PortfolioPosition position) async {
+    final code = position.code.trim();
+    if (code.isEmpty) {
+      return;
+    }
+    final name = position.name.trim().isEmpty ? code : position.name.trim();
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => _FundTrendPage(
+          apiClient: widget.apiClient,
+          code: code,
+          name: name,
+          quoteSource: _quoteSourceMode,
+        ),
+      ),
+    );
   }
 
   Color _signedColor(double value) {
@@ -1849,95 +1868,102 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 ),
               ),
               confirmDismiss: (_) => _confirmAndDeleteHolding(position),
-              child: Container(
-                padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-                decoration: const BoxDecoration(
-                  border: Border(bottom: BorderSide(color: Color(0xFFEDEFF5))),
-                ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      flex: 5,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            position.name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              fontSize: 16,
-                              color: Color(0xFF1F2A44),
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Row(
+              child: Material(
+                color: Colors.white,
+                child: InkWell(
+                  onTap: () => unawaited(_openHoldingTrend(position)),
+                  child: Container(
+                    padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+                    decoration: const BoxDecoration(
+                      border:
+                          Border(bottom: BorderSide(color: Color(0xFFEDEFF5))),
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          flex: 5,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                "¥ ${_settledPositionValue(position) == null ? "--" : _fmt(_settledPositionValue(position)!)}",
+                                position.name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
-                                  color: Color(0xFF7B8599),
-                                  fontSize: 14,
+                                  fontSize: 16,
+                                  color: Color(0xFF1F2A44),
+                                  fontWeight: FontWeight.w600,
                                 ),
                               ),
-                              if (position.navSettled) ...[
-                                const SizedBox(width: 6),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 5,
-                                    vertical: 1,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFFEAF8EF),
-                                    borderRadius: BorderRadius.circular(4),
-                                  ),
-                                  child: Text(
-                                    _updatedBadgeText(position.navDate),
+                              const SizedBox(height: 4),
+                              Row(
+                                children: [
+                                  Text(
+                                    "¥ ${_settledPositionValue(position) == null ? "--" : _fmt(_settledPositionValue(position)!)}",
                                     style: const TextStyle(
-                                      color: Color(0xFF17A34A),
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w600,
+                                      color: Color(0xFF7B8599),
+                                      fontSize: 14,
                                     ),
                                   ),
-                                ),
-                              ],
+                                  if (position.navSettled) ...[
+                                    const SizedBox(width: 6),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 5,
+                                        vertical: 1,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFFEAF8EF),
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: Text(
+                                        _updatedBadgeText(position.navDate),
+                                        style: const TextStyle(
+                                          color: Color(0xFF17A34A),
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
                             ],
                           ),
-                        ],
-                      ),
+                        ),
+                        Expanded(
+                          flex: 2,
+                          child: Text(
+                            position.dailyChangePct == null
+                                ? "--"
+                                : "${position.dailyChangePct! >= 0 ? "+" : ""}${position.dailyChangePct!.toStringAsFixed(2)}%",
+                            textAlign: TextAlign.center,
+                            style: _riseFallStyle(position.dailyChangePct ?? 0),
+                          ),
+                        ),
+                        Expanded(
+                          flex: 3,
+                          child: Text(
+                            position.dailyProfit == null
+                                ? "--"
+                                : "${position.dailyProfit! >= 0 ? "+" : ""}${_fmt(position.dailyProfit!)}",
+                            textAlign: TextAlign.right,
+                            style: _riseFallStyle(position.dailyProfit ?? 0),
+                          ),
+                        ),
+                        Expanded(
+                          flex: 3,
+                          child: Text(
+                            position.holdingProfit == null
+                                ? "--"
+                                : "${position.holdingProfit! >= 0 ? "+" : ""}${_fmt(position.holdingProfit!)}",
+                            textAlign: TextAlign.right,
+                            style: _riseFallStyle(position.holdingProfit ?? 0),
+                          ),
+                        ),
+                      ],
                     ),
-                    Expanded(
-                      flex: 2,
-                      child: Text(
-                        position.dailyChangePct == null
-                            ? "--"
-                            : "${position.dailyChangePct! >= 0 ? "+" : ""}${position.dailyChangePct!.toStringAsFixed(2)}%",
-                        textAlign: TextAlign.center,
-                        style: _riseFallStyle(position.dailyChangePct ?? 0),
-                      ),
-                    ),
-                    Expanded(
-                      flex: 3,
-                      child: Text(
-                        position.dailyProfit == null
-                            ? "--"
-                            : "${position.dailyProfit! >= 0 ? "+" : ""}${_fmt(position.dailyProfit!)}",
-                        textAlign: TextAlign.right,
-                        style: _riseFallStyle(position.dailyProfit ?? 0),
-                      ),
-                    ),
-                    Expanded(
-                      flex: 3,
-                      child: Text(
-                        position.holdingProfit == null
-                            ? "--"
-                            : "${position.holdingProfit! >= 0 ? "+" : ""}${_fmt(position.holdingProfit!)}",
-                        textAlign: TextAlign.right,
-                        style: _riseFallStyle(position.holdingProfit ?? 0),
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
               ),
             ),
@@ -2331,72 +2357,123 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   Widget _buildControls() {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text("筛选"),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: DropdownButtonFormField<String>(
-                    initialValue: _selectedSectorType,
-                    decoration: const InputDecoration(
-                      labelText: "板块类型",
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                    items: _sectorTypes
-                        .map((value) =>
-                            DropdownMenuItem(value: value, child: Text(value)))
-                        .toList(),
-                    onChanged: _loadingSector
-                        ? null
-                        : (value) {
-                            if (value == null) {
-                              return;
-                            }
-                            setState(() {
-                              _selectedSectorType = value;
-                            });
-                            unawaited(_loadSectorFlow());
-                          },
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: DropdownButtonFormField<String>(
-                    initialValue: _selectedIndicator,
-                    decoration: const InputDecoration(
-                      labelText: "周期",
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                    items: _indicators
-                        .map((value) =>
-                            DropdownMenuItem(value: value, child: Text(value)))
-                        .toList(),
-                    onChanged: _loadingSector
-                        ? null
-                        : (value) {
-                            if (value == null) {
-                              return;
-                            }
-                            setState(() {
-                              _selectedIndicator = value;
-                            });
-                            unawaited(_loadSectorFlow());
-                          },
-                  ),
-                ),
-              ],
-            ),
-          ],
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(16),
+        gradient: const LinearGradient(
+          colors: [Color(0xFFF8FBFF), Color(0xFFF3F7FF)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
         ),
+        border: Border.all(color: const Color(0xFFDDE7FF)),
       ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.tune_rounded, size: 18, color: Color(0xFF2E5ED7)),
+              SizedBox(width: 6),
+              Text(
+                "资金流筛选",
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF1F2A44),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          _buildFlowFilterGroup(
+            label: "板块类型",
+            options: _sectorTypes,
+            selected: _selectedSectorType,
+            onSelect: _loadingSector
+                ? null
+                : (value) {
+                    setState(() {
+                      _selectedSectorType = value;
+                    });
+                    unawaited(_loadSectorFlow());
+                  },
+          ),
+          const SizedBox(height: 10),
+          _buildFlowFilterGroup(
+            label: "统计周期",
+            options: _indicators,
+            selected: _selectedIndicator,
+            onSelect: _loadingSector
+                ? null
+                : (value) {
+                    setState(() {
+                      _selectedIndicator = value;
+                    });
+                    unawaited(_loadSectorFlow());
+                  },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFlowFilterGroup({
+    required String label,
+    required List<String> options,
+    required String selected,
+    required ValueChanged<String>? onSelect,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 12,
+            color: Color(0xFF6B7285),
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: options.map((item) {
+            final active = item == selected;
+            return InkWell(
+              borderRadius: BorderRadius.circular(999),
+              onTap: onSelect == null ? null : () => onSelect(item),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 160),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(999),
+                  color: active
+                      ? const Color(0xFF2E5ED7)
+                      : const Color(0xFFFFFFFF),
+                  border: Border.all(
+                    color: active
+                        ? const Color(0xFF2E5ED7)
+                        : const Color(0xFFD7DEEE),
+                  ),
+                ),
+                child: Text(
+                  item,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: active
+                        ? const Color(0xFFFFFFFF)
+                        : const Color(0xFF44506A),
+                  ),
+                ),
+              ),
+            );
+          }).toList(),
+        ),
+      ],
     );
   }
 
@@ -2406,50 +2483,226 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       return const SizedBox.shrink();
     }
 
-    final theme = Theme.of(context);
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              "板块资金流 Top ${flow.items.length}",
-              style: theme.textTheme.titleMedium
-                  ?.copyWith(fontWeight: FontWeight.w700),
-            ),
-            const SizedBox(height: 10),
-            for (var i = 0; i < flow.items.length; i++)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    border: Border.all(color: Colors.black12),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: ListTile(
-                    dense: true,
-                    contentPadding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                    leading: CircleAvatar(
-                      radius: 12,
-                      child: Text("${i + 1}",
-                          style: const TextStyle(fontSize: 11)),
-                    ),
-                    title: Text(flow.items[i].name),
-                    subtitle: Text("涨跌幅 ${flow.items[i].changePct}"),
-                    trailing: Text(
-                      "${flow.items[i].mainNet >= 0 ? "+" : ""}${_fmt(flow.items[i].mainNet)} ${flow.items[i].unit}",
-                      style: TextStyle(
-                        color: _signedColor(flow.items[i].mainNet),
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
+    final items = flow.items;
+    final topCount = items.length;
+    final netSum = items.fold<double>(0, (sum, item) => sum + item.mainNet);
+    final risingCount =
+        items.where((item) => (_parsePctText(item.changePct) ?? 0) >= 0).length;
+    final ratioText = "$risingCount/$topCount";
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            color: const Color(0xFF1F2A44),
+          ),
+          child: Wrap(
+            spacing: 16,
+            runSpacing: 10,
+            children: [
+              _buildFlowStat("样本数量", "$topCount"),
+              _buildFlowStat("上涨板块", ratioText),
+              _buildFlowStat(
+                "主力净额",
+                "${netSum >= 0 ? "+" : ""}${_fmt(netSum)} ${items.isEmpty ? "" : items.first.unit}",
+                valueColor: netSum >= 0
+                    ? const Color(0xFFFFA9B0)
+                    : const Color(0xFF8DE0A4),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 10),
+        for (var i = 0; i < items.length; i++) ...[
+          _buildSectorFlowCard(items[i], i + 1),
+          if (i != items.length - 1) const SizedBox(height: 10),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildFlowStat(String label, String value, {Color? valueColor}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 11,
+            color: Color(0xFFA8B3CB),
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 15,
+            fontWeight: FontWeight.w800,
+            color: valueColor ?? const Color(0xFFFFFFFF),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSectorFlowCard(SectorItem item, int rank) {
+    final change = _parsePctText(item.changePct);
+    final changeText = change == null
+        ? item.changePct
+        : "${change >= 0 ? "+" : ""}${change.toStringAsFixed(2)}%";
+    final mainNetText =
+        "${item.mainNet >= 0 ? "+" : ""}${_fmt(item.mainNet)} ${item.unit}";
+    final totalFlow = item.mainInflow.abs() + item.mainOutflow.abs();
+    final inflowRatio =
+        totalFlow <= 0 ? 0.5 : (item.mainInflow.abs() / totalFlow);
+    final inflowFlex = (inflowRatio * 1000).round().clamp(1, 999);
+    final outflowFlex = (1000 - inflowFlex).clamp(1, 999);
+
+    final gradient = item.mainNet >= 0
+        ? const [Color(0xFFFFF6F7), Color(0xFFFFFFFF)]
+        : const [Color(0xFFF4FBF6), Color(0xFFFFFFFF)];
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(14),
+        gradient: LinearGradient(
+          colors: gradient,
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        border: Border.all(color: const Color(0xFFE5EAF5)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 24,
+                height: 24,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: rank <= 3
+                      ? const Color(0xFF2E5ED7)
+                      : const Color(0xFFE9EEFA),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  "$rank",
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                    color: rank <= 3
+                        ? const Color(0xFFFFFFFF)
+                        : const Color(0xFF5E6A84),
                   ),
                 ),
               ),
-          ],
-        ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  item.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1F2A44),
+                  ),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                decoration: BoxDecoration(
+                  color: (change ?? 0) >= 0
+                      ? const Color(0xFFFFEBED)
+                      : const Color(0xFFE9F8EF),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  changeText,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: (change ?? 0) >= 0
+                        ? const Color(0xFFDE4C54)
+                        : const Color(0xFF17A34A),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              const Text(
+                "主力净额",
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Color(0xFF7B8599),
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                mainNetText,
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w800,
+                  color: _signedColor(item.mainNet),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 9),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(999),
+            child: SizedBox(
+              height: 7,
+              child: Row(
+                children: [
+                  Expanded(
+                    flex: inflowFlex,
+                    child: Container(color: const Color(0xFF3F77F1)),
+                  ),
+                  Expanded(
+                    flex: outflowFlex,
+                    child: Container(color: const Color(0xFFF59E0B)),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  "流入 ${_fmt(item.mainInflow)} ${item.unit}",
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF4D5A75),
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              Text(
+                "流出 ${_fmt(item.mainOutflow.abs())} ${item.unit}",
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: Color(0xFF7B8599),
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
@@ -2835,14 +3088,36 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       children: [
         _buildErrorCard(_sectorError),
         _buildControls(),
+        const SizedBox(height: 10),
         _buildSectors(context),
         if (_sectorFlow != null)
-          Padding(
-            padding: const EdgeInsets.only(top: 8),
-            child: Text(
-              "源: ${_sectorFlow!.provider} | 周期: $_selectedIndicator | 类型: $_selectedSectorType",
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodySmall,
+          Container(
+            margin: const EdgeInsets.only(top: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF5F7FC),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: const Color(0xFFE3E9F6)),
+            ),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.info_outline_rounded,
+                  size: 14,
+                  color: Color(0xFF7B8599),
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    "源: ${_sectorFlow!.provider} | 周期: $_selectedIndicator | 类型: $_selectedSectorType",
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: Color(0xFF6C7387),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
         const SizedBox(height: 12),
@@ -3396,6 +3671,376 @@ class _FundSearchPageState extends State<_FundSearchPage> {
         ],
       ),
     );
+  }
+}
+
+class _FundTrendPage extends StatefulWidget {
+  const _FundTrendPage({
+    required this.apiClient,
+    required this.code,
+    required this.name,
+    required this.quoteSource,
+  });
+
+  final ApiClient apiClient;
+  final String code;
+  final String name;
+  final String quoteSource;
+
+  @override
+  State<_FundTrendPage> createState() => _FundTrendPageState();
+}
+
+class _FundTrendPageState extends State<_FundTrendPage> {
+  FundTrendResponse? _trend;
+  String? _error;
+  bool _loading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final trend = await widget.apiClient.fetchFundTrend(
+        code: widget.code,
+        quoteSource: widget.quoteSource,
+        maxPoints: 220,
+      );
+      if (!mounted) {
+        return;
+      }
+      if (!trend.ok || trend.points.isEmpty) {
+        setState(() {
+          _trend = trend;
+          _error = trend.error.isEmpty ? "暂无走势数据" : trend.error;
+        });
+        return;
+      }
+      setState(() {
+        _trend = trend;
+        _error = null;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      String message = error.toString();
+      if (error is ApiException && error.body.isNotEmpty) {
+        message = "${error.message}\n${error.body}";
+      }
+      setState(() {
+        _error = message;
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+        });
+      }
+    }
+  }
+
+  String _fmtNum(double value, {int digits = 4}) {
+    return value.toStringAsFixed(digits);
+  }
+
+  Widget _metric(String label, String value, {Color? color}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            color: Color(0xFF7B8599),
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          value,
+          style: TextStyle(
+            color: color ?? const Color(0xFF1F2A44),
+            fontSize: 16,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final title = widget.name.trim().isEmpty ? widget.code : widget.name.trim();
+    final trend = _trend;
+    final points = trend?.points ?? const <FundTrendPoint>[];
+    final hasData = points.isNotEmpty;
+
+    double latestNav = 0;
+    double latestPct = 0;
+    String latestTime = "--";
+    double minNav = 0;
+    double maxNav = 0;
+    if (hasData) {
+      latestNav = points.last.nav;
+      latestPct = points.last.pct ?? 0;
+      latestTime = points.last.time;
+      minNav = points.map((e) => e.nav).reduce(math.min);
+      maxNav = points.map((e) => e.nav).reduce(math.max);
+    }
+
+    return Scaffold(
+      backgroundColor: const Color(0xFFF3F5F9),
+      appBar: AppBar(
+        title: Text("$title 走势"),
+        actions: [
+          IconButton(
+            onPressed: _loading ? null : _load,
+            icon: const Icon(Icons.refresh_rounded),
+          ),
+        ],
+      ),
+      body: _loading && !hasData
+          ? const Center(child: CircularProgressIndicator())
+          : RefreshIndicator(
+              onRefresh: _load,
+              child: ListView(
+                physics: const AlwaysScrollableScrollPhysics(
+                  parent: ClampingScrollPhysics(),
+                ),
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 22),
+                children: [
+                  if (_error != null && _error!.isNotEmpty)
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 10),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFF1F2),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFFFECACA)),
+                      ),
+                      child: Text(
+                        _error!,
+                        style: const TextStyle(
+                          color: Color(0xFFB42318),
+                          fontSize: 13,
+                        ),
+                      ),
+                    ),
+                  if (!hasData)
+                    Container(
+                      padding: const EdgeInsets.all(20),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: const Text(
+                        "暂无走势数据，下拉重试。",
+                        style: TextStyle(color: Color(0xFF7B8599)),
+                      ),
+                    )
+                  else ...[
+                    Container(
+                      padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: const Color(0xFFE7EBF3)),
+                      ),
+                      child: Wrap(
+                        spacing: 16,
+                        runSpacing: 10,
+                        children: [
+                          _metric("最新估值", _fmtNum(latestNav)),
+                          _metric(
+                            "涨跌幅",
+                            "${latestPct >= 0 ? "+" : ""}${latestPct.toStringAsFixed(2)}%",
+                            color: latestPct >= 0
+                                ? const Color(0xFFDE4C54)
+                                : const Color(0xFF17A34A),
+                          ),
+                          _metric("更新时间", latestTime),
+                          _metric("最低", _fmtNum(minNav)),
+                          _metric("最高", _fmtNum(maxNav)),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Container(
+                      padding: const EdgeInsets.fromLTRB(10, 10, 10, 12),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: const Color(0xFFE7EBF3)),
+                      ),
+                      child: Column(
+                        children: [
+                          SizedBox(
+                            height: 220,
+                            width: double.infinity,
+                            child: CustomPaint(
+                              painter: _FundTrendPainter(points: points),
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Row(
+                            children: [
+                              Text(
+                                points.first.time,
+                                style: const TextStyle(
+                                  color: Color(0xFF7B8599),
+                                  fontSize: 12,
+                                ),
+                              ),
+                              const Spacer(),
+                              Text(
+                                points[(points.length / 2).floor()].time,
+                                style: const TextStyle(
+                                  color: Color(0xFF7B8599),
+                                  fontSize: 12,
+                                ),
+                              ),
+                              const Spacer(),
+                              Text(
+                                points.last.time,
+                                style: const TextStyle(
+                                  color: Color(0xFF7B8599),
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Container(
+                      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: const Color(0xFFE7EBF3)),
+                      ),
+                      child: Text(
+                        "数据源: ${trend?.source.isNotEmpty == true ? trend!.source : "unknown"}"
+                        "${trend?.generatedAt.isNotEmpty == true ? " | 生成于 ${trend!.generatedAt}" : ""}",
+                        style: const TextStyle(
+                          color: Color(0xFF7B8599),
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+    );
+  }
+}
+
+class _FundTrendPainter extends CustomPainter {
+  const _FundTrendPainter({required this.points});
+
+  final List<FundTrendPoint> points;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final bg = Paint()..color = const Color(0xFFF8FAFF);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(Offset.zero & size, const Radius.circular(10)),
+      bg,
+    );
+
+    if (points.isEmpty) {
+      return;
+    }
+    if (points.length == 1) {
+      final dot = Paint()..color = const Color(0xFF2457FF);
+      canvas.drawCircle(
+        Offset(size.width * 0.5, size.height * 0.5),
+        3.5,
+        dot,
+      );
+      return;
+    }
+
+    final navs = points.map((e) => e.nav).toList();
+    final minNav = navs.reduce(math.min);
+    final maxNav = navs.reduce(math.max);
+    final range = (maxNav - minNav).abs() < 1e-9 ? 1e-9 : (maxNav - minNav);
+
+    final gridPaint = Paint()
+      ..color = const Color(0xFFE6EBF6)
+      ..strokeWidth = 1;
+    for (var i = 1; i <= 4; i++) {
+      final y = size.height * i / 5;
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), gridPaint);
+    }
+
+    final path = Path();
+    final fillPath = Path();
+    for (var i = 0; i < points.length; i++) {
+      final x = size.width * i / (points.length - 1);
+      final y = size.height - ((points[i].nav - minNav) / range) * size.height;
+      if (i == 0) {
+        path.moveTo(x, y);
+        fillPath.moveTo(x, size.height);
+        fillPath.lineTo(x, y);
+      } else {
+        path.lineTo(x, y);
+        fillPath.lineTo(x, y);
+      }
+    }
+    fillPath.lineTo(size.width, size.height);
+    fillPath.close();
+
+    final fillPaint = Paint()
+      ..shader = const LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [Color(0x33407CFF), Color(0x00407CFF)],
+      ).createShader(Offset.zero & size);
+    canvas.drawPath(fillPath, fillPaint);
+
+    final linePaint = Paint()
+      ..color = const Color(0xFF2E5ED7)
+      ..strokeWidth = 2
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    canvas.drawPath(path, linePaint);
+
+    final latestX = size.width;
+    final latestY =
+        size.height - ((points.last.nav - minNav) / range) * size.height;
+    canvas.drawCircle(
+      Offset(latestX, latestY),
+      3.5,
+      Paint()..color = const Color(0xFF2E5ED7),
+    );
+    canvas.drawCircle(
+      Offset(latestX, latestY),
+      6.5,
+      Paint()..color = const Color(0x332E5ED7),
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _FundTrendPainter oldDelegate) {
+    if (oldDelegate.points.length != points.length) {
+      return true;
+    }
+    if (points.isEmpty) {
+      return false;
+    }
+    return oldDelegate.points.last.nav != points.last.nav;
   }
 }
 
