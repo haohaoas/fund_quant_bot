@@ -102,10 +102,7 @@ class ApiClient {
 
   String _normalizeQuoteSource(String? value) {
     final mode = (value ?? "").trim().toLowerCase();
-    if (mode == "estimate" ||
-        mode == "settled" ||
-        mode == "biying" ||
-        mode == "fund123") {
+    if (mode == "estimate" || mode == "settled" || mode == "fund123") {
       return mode;
     }
     return "auto";

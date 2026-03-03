@@ -127,7 +127,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final Set<String> _deletingPositionCodes = <String>{};
   Timer? _autoRefreshTimer;
   bool _autoRefreshInFlight = false;
-  String _quoteSourceMode = "auto";
+  String _quoteSourceMode = "fund123";
 
   @override
   void initState() {
@@ -983,16 +983,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   String _quoteSourceLabel(String mode) {
     switch (mode) {
-      case "biying":
-        return "必盈优先";
       case "fund123":
-        return "Fund123优先";
+        return "数据源1";
       case "estimate":
-        return "估值优先";
+        return "数据源2";
       case "settled":
-        return "净值优先";
+        return "数据源3";
       default:
-        return "智能";
+        return "数据源1";
     }
   }
 
@@ -1001,12 +999,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       final prefs = await SharedPreferences.getInstance();
       final saved =
           (prefs.getString(_quoteSourcePrefKey) ?? "").trim().toLowerCase();
-      final mode = (saved == "estimate" ||
-              saved == "settled" ||
-              saved == "biying" ||
-              saved == "fund123")
-          ? saved
-          : "auto";
+      final mode =
+          (saved == "estimate" || saved == "settled" || saved == "fund123")
+              ? saved
+              : "fund123";
       if (!mounted) {
         return;
       }
@@ -1059,24 +1055,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               ),
               const SizedBox(height: 6),
               option(
-                mode: "biying",
-                title: "必盈优先",
-                subtitle: "优先必盈实时行情，失败自动回退",
-              ),
-              option(
                 mode: "fund123",
-                title: "Fund123优先",
-                subtitle: "优先 Fund123 估值，失败自动回退",
+                title: "数据源1",
+                subtitle: "Fund123 估值",
               ),
               option(
                 mode: "estimate",
-                title: "估值优先",
-                subtitle: "优先 fundgz 估值，更新快",
+                title: "数据源2",
+                subtitle: "fundgz 估值",
               ),
               option(
                 mode: "settled",
-                title: "净值优先",
-                subtitle: "优先已结算净值，适合晚间查看",
+                title: "数据源3",
+                subtitle: "结算净值",
               ),
               const SizedBox(height: 8),
             ],

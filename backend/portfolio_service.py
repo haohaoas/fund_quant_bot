@@ -58,7 +58,7 @@ _OPEN_FUND_DAILY_CACHE: Dict[str, Any] = {"ts": 0.0, "data": {}}
 _ETF_SPOT_TTL_SECONDS = 120
 _ETF_SPOT_CACHE: Dict[str, Any] = {"ts": 0.0, "data": {}}
 DEFAULT_ACCOUNT_ID = 1
-_QUOTE_SOURCE_MODES = {"auto", "estimate", "settled", "biying", "fund123"}
+_QUOTE_SOURCE_MODES = {"auto", "estimate", "settled", "fund123"}
 _PORTFOLIO_ENRICH_TIMEOUT_SECONDS = 8.0
 _FUND123_CONNECT_TIMEOUT_SECONDS = float(os.getenv("FUND123_CONNECT_TIMEOUT_SECONDS", "0.8"))
 _FUND123_READ_TIMEOUT_SECONDS = float(os.getenv("FUND123_READ_TIMEOUT_SECONDS", "1.5"))
@@ -949,22 +949,11 @@ def fetch_fund_gz(code: str, source_mode: str = "auto") -> Dict[str, Any]:
         if settled.get("ok"):
             _FUNDGZ_CACHE[cache_key] = (now, settled)
             return settled
-    elif mode == "biying":
-        by = _fetch_biying_quote(c)
-        if by.get("ok"):
-            _FUNDGZ_CACHE[cache_key] = (now, by)
-            return by
     elif mode == "fund123":
         f123 = _fetch_fund123_quote(c)
         if f123.get("ok"):
             _FUNDGZ_CACHE[cache_key] = (now, f123)
             return f123
-    elif mode == "auto":
-        # auto keeps existing strategy but tries Biying first when configured.
-        by = _fetch_biying_quote(c)
-        if by.get("ok"):
-            _FUNDGZ_CACHE[cache_key] = (now, by)
-            return by
 
     headers = {
         "User-Agent": (
@@ -1172,7 +1161,7 @@ def enrich_position(pos: Dict[str, Any], quote_source: str = "auto") -> Dict[str
     cost = _safe_float(pos.get("cost")) or 0.0
     source_mode = _norm_quote_source_mode(quote_source)
     # Fast quote modes should avoid heavy settled/sector backfill on each refresh.
-    fast_mode = source_mode in {"estimate", "biying", "fund123"}
+    fast_mode = source_mode in {"estimate", "fund123"}
 
     gz = fetch_fund_gz(code, source_mode=source_mode) if code else {"ok": False}
     name = str(gz.get("name") or "").strip() if gz.get("ok") else ""
