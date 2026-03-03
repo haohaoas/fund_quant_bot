@@ -1368,16 +1368,26 @@ def enrich_position(pos: Dict[str, Any], quote_source: str = "auto") -> Dict[str
     if daily_change_pct is None and nav is not None and prev_nav is not None and prev_nav != 0:
         daily_change_pct = (float(nav) - float(prev_nav)) / float(prev_nav) * 100.0
 
-    market_value = (shares * nav) if (nav is not None) else None
-    holding_profit = (shares * (nav - cost)) if (nav is not None) else None
-    holding_profit_pct = ((nav - cost) / cost * 100.0) if (nav is not None and cost > 0) else None
-
-    daily_profit = (shares * (nav - prev_nav)) if (nav is not None and prev_nav is not None) else None
     jzrq = str(gz.get("jzrq") or "").strip() if gz.get("ok") else ""
     nav_settled = _is_nav_settled(gz) if gz.get("ok") else False
 
+    # 持仓页口径：白天不使用估值波动，按上一日已结算净值计价。
+    # 这样“当天买入多少就是多少”，收益在晚间净值更新后再变化。
+    if not nav_settled:
+        if prev_nav is not None:
+            nav = prev_nav
+        if nav is not None:
+            daily_change_pct = 0.0
+
+    market_value = (shares * nav) if (nav is not None) else None
+    holding_profit = (shares * (nav - cost)) if (nav is not None) else None
+    holding_profit_pct = ((nav - cost) / cost * 100.0) if (nav is not None and cost > 0) else None
+    daily_profit = 0.0 if (not nav_settled and nav is not None) else (
+        (shares * (nav - prev_nav)) if (nav is not None and prev_nav is not None) else None
+    )
+
     # 若净值已结算，优先用历史净值回填真实日涨幅（避免继续显示估值涨幅）。
-    if (not fast_mode) and nav_settled and code:
+    if nav_settled and code:
         snap = _fetch_settled_nav_snapshot(code, jzrq)
         if snap:
             nav = _safe_float(snap.get("nav")) or nav
