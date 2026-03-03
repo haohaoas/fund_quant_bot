@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional
 
 import time
 import threading
+import os
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -20,6 +22,7 @@ router = APIRouter()
 # We cache the largest requested top_n and serve subsets for smaller top_n.
 # =========================
 _FLOW_CACHE_TTL_SECONDS = 60
+_FLOW_FETCH_TIMEOUT_SECONDS = float(os.getenv("MARKET_FLOW_FETCH_TIMEOUT_SECONDS", "8"))
 _flow_cache_lock = threading.Lock()
 _flow_cache: Dict[tuple, Dict[str, Any]] = {}
 
@@ -72,6 +75,44 @@ def _get_sector_fund_flow_cached(
     return res
 
 
+def _get_sector_fund_flow_stale_only(
+    *,
+    indicator: str,
+    sector_type: str,
+    top_n: int,
+    provider: Optional[str],
+    warning: str,
+) -> Dict[str, Any]:
+    key = _flow_cache_key(indicator, sector_type, provider)
+    now = time.time()
+    with _flow_cache_lock:
+        cached = _flow_cache.get(key)
+    if cached and isinstance(cached.get("data"), dict):
+        ts = float(cached.get("_ts", 0.0))
+        out = dict(cached.get("data") or {})
+        out["items"] = list(out.get("items") or [])[: int(top_n)]
+        out["top_n"] = int(top_n)
+        out["cached"] = True
+        out["stale"] = True
+        out["cache_age_seconds"] = int(max(0.0, now - ts))
+        out["warning"] = warning
+        return out
+    return {
+        "ok": False,
+        "generated_at": "",
+        "fetched_at": "",
+        "stale": True,
+        "warning": warning,
+        "indicator": indicator,
+        "sector_type": sector_type,
+        "top_n": int(top_n),
+        "items": [],
+        "debug_columns": [],
+        "provider": str(provider or "auto"),
+        "cached": False,
+    }
+
+
 @router.get("/api/sector_fund_flow")
 def sector_fund_flow(
     indicator: str = "今日",
@@ -79,7 +120,32 @@ def sector_fund_flow(
     top_n: int = 30,
     provider: Optional[str] = None,
 ):
-    res = _get_sector_fund_flow_cached(indicator=indicator, sector_type=sector_type, top_n=top_n, provider=provider)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            fut = pool.submit(
+                _get_sector_fund_flow_cached,
+                indicator=indicator,
+                sector_type=sector_type,
+                top_n=top_n,
+                provider=provider,
+            )
+            res = fut.result(timeout=_FLOW_FETCH_TIMEOUT_SECONDS)
+    except FuturesTimeoutError:
+        res = _get_sector_fund_flow_stale_only(
+            indicator=indicator,
+            sector_type=sector_type,
+            top_n=top_n,
+            provider=provider,
+            warning="板块资金流抓取超时，返回缓存/空结果。",
+        )
+    except Exception as e:
+        res = _get_sector_fund_flow_stale_only(
+            indicator=indicator,
+            sector_type=sector_type,
+            top_n=top_n,
+            provider=provider,
+            warning=f"板块资金流抓取异常：{type(e).__name__}",
+        )
     return JSONResponse(content=res, headers={"Content-Type": "application/json; charset=utf-8"})
 
 
@@ -90,7 +156,32 @@ def dashboard(
     top_n: int = 20,
     provider: Optional[str] = None,
 ):
-    data = _get_sector_fund_flow_cached(indicator=indicator, sector_type=sector_type, top_n=top_n, provider=provider)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            fut = pool.submit(
+                _get_sector_fund_flow_cached,
+                indicator=indicator,
+                sector_type=sector_type,
+                top_n=top_n,
+                provider=provider,
+            )
+            data = fut.result(timeout=_FLOW_FETCH_TIMEOUT_SECONDS)
+    except FuturesTimeoutError:
+        data = _get_sector_fund_flow_stale_only(
+            indicator=indicator,
+            sector_type=sector_type,
+            top_n=top_n,
+            provider=provider,
+            warning="板块资金流抓取超时，返回缓存/空结果。",
+        )
+    except Exception as e:
+        data = _get_sector_fund_flow_stale_only(
+            indicator=indicator,
+            sector_type=sector_type,
+            top_n=top_n,
+            provider=provider,
+            warning=f"板块资金流抓取异常：{type(e).__name__}",
+        )
     cash = ps.get_account_cash()
     positions = ps.list_positions()
 

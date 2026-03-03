@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
+import os
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -9,6 +11,7 @@ from backend.auth import get_current_user
 from backend import watchlist_service as ws
 
 router = APIRouter()
+_WATCHLIST_ROUTE_TIMEOUT_SECONDS = float(os.getenv("WATCHLIST_ROUTE_TIMEOUT_SECONDS", "10"))
 
 
 class WatchlistPayload(BaseModel):
@@ -28,7 +31,15 @@ def get_watchlist(
     user: Dict[str, Any] = Depends(get_current_user),
 ):
     uid = int(user["id"])
-    return {"items": ws.list_watchlist(uid, quote_source=quote_source)}
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            fut = pool.submit(ws.list_watchlist, uid, quote_source)
+            items = fut.result(timeout=_WATCHLIST_ROUTE_TIMEOUT_SECONDS)
+    except FuturesTimeoutError:
+        items = []
+    except Exception:
+        items = []
+    return {"items": items}
 
 
 @router.post("/api/watchlist")
@@ -81,12 +92,29 @@ def analyze_watchlist_fund(
 ):
     _ = user
     try:
-        result = ws.analyze_fund(
-            code=code,
-            name=name or "",
-            quote_source=quote_source,
-            include_ai=include_ai,
-        )
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            fut = pool.submit(
+                ws.analyze_fund,
+                code=code,
+                name=name or "",
+                quote_source=quote_source,
+                include_ai=include_ai,
+            )
+            result = fut.result(timeout=_WATCHLIST_ROUTE_TIMEOUT_SECONDS)
+    except FuturesTimeoutError:
+        # Degrade to no-AI variant to keep UX responsive.
+        try:
+            result = ws.analyze_fund(
+                code=code,
+                name=name or "",
+                quote_source=quote_source,
+                include_ai=False,
+            )
+            ai = result.get("ai_decision") or {}
+            ai["reason"] = "分析超时，已返回无AI快速结果。"
+            result["ai_decision"] = ai
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"analyze timeout: {type(e).__name__}: {e}")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

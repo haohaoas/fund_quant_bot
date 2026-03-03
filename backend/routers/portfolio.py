@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Dict, Optional
+import os
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -10,6 +12,7 @@ from backend import portfolio_service as ps
 from backend.auth import get_current_user
 
 router = APIRouter()
+_PORTFOLIO_ROUTE_TIMEOUT_SECONDS = float(os.getenv("PORTFOLIO_ROUTE_TIMEOUT_SECONDS", "10"))
 
 
 def _now_str() -> str:
@@ -52,18 +55,13 @@ def portfolio(
         # serial network calls timing out on portfolio page.
         if callable(clear_fn) and source_mode != "estimate":
             clear_fn()
-    classic_positions = ps.list_positions(
-        account_id=aid,
-        quote_source=quote_source,
-    )
-
     cashflow_fn = getattr(ps, "get_cashflow_summary", None)
-    if callable(cashflow_fn):
-        cashflow = cashflow_fn(days=3650, account_id=aid)
-    else:
+
+    def _build_cashflow_fallback() -> Dict[str, Any]:
         inflow = 0.0
         outflow = 0.0
-        for t in ps.list_trades(limit=2000, account_id=aid):
+        trades = ps.list_trades(limit=2000, account_id=aid)
+        for t in trades:
             a = str(t.get("action") or "").upper()
             amt = t.get("amount")
             price = t.get("price")
@@ -82,12 +80,43 @@ def portfolio(
                 outflow += v
             elif a in ("SELL", "REDEEM"):
                 inflow += v
-        cashflow = {
+        return {
             "inflow": round(inflow, 2),
             "outflow": round(outflow, 2),
             "net": round(inflow - outflow, 2),
-            "trades": float(len(ps.list_trades(limit=2000, account_id=aid))),
+            "trades": float(len(trades)),
         }
+
+    classic_positions = []
+    cashflow: Dict[str, Any] = {"inflow": 0.0, "outflow": 0.0, "net": 0.0, "trades": 0.0}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f_pos = pool.submit(ps.list_positions, account_id=aid, quote_source=quote_source)
+        if callable(cashflow_fn):
+            f_flow = pool.submit(cashflow_fn, days=3650, account_id=aid)
+        else:
+            f_flow = pool.submit(_build_cashflow_fallback)
+
+        try:
+            classic_positions = f_pos.result(timeout=_PORTFOLIO_ROUTE_TIMEOUT_SECONDS) or []
+        except FuturesTimeoutError:
+            try:
+                f_pos.cancel()
+            except Exception:
+                pass
+            classic_positions = []
+        except Exception:
+            classic_positions = []
+
+        try:
+            cashflow = f_flow.result(timeout=_PORTFOLIO_ROUTE_TIMEOUT_SECONDS) or cashflow
+        except FuturesTimeoutError:
+            try:
+                f_flow.cancel()
+            except Exception:
+                pass
+            cashflow = _build_cashflow_fallback()
+        except Exception:
+            cashflow = _build_cashflow_fallback()
 
     total_mv = 0.0
     total_daily_profit = 0.0

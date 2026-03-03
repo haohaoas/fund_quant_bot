@@ -4,6 +4,7 @@ from datetime import datetime
 import os
 import time
 from typing import Any, Dict, List, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 
 from backend.db import get_conn, init_db
 
@@ -13,6 +14,8 @@ _SECTOR_PCT_FALLBACK_CACHE: Dict[str, Any] = {"ts": 0.0, "data": {}}
 _SECTOR_PCT_FALLBACK_TTL_SECONDS = 120
 _SECTOR_GRID_STEP_PCT = float(os.getenv("WATCHLIST_SECTOR_GRID_STEP_PCT", "0.5"))
 _SECTOR_GRID_LEVELS = int(os.getenv("WATCHLIST_SECTOR_GRID_LEVELS", "4"))
+_WATCHLIST_ENRICH_TIMEOUT_SECONDS = float(os.getenv("WATCHLIST_ENRICH_TIMEOUT_SEC", "8"))
+_WATCHLIST_ENRICH_MAX_WORKERS = int(os.getenv("WATCHLIST_ENRICH_MAX_WORKERS", "6"))
 
 
 def _norm_user_id(user_id: int) -> int:
@@ -475,7 +478,7 @@ def list_watchlist(user_id: int, quote_source: str = "auto") -> List[Dict[str, A
 
     items = [_item_from_row(dict(r)) for r in rows]
 
-    # Enrich watchlist with latest quote and fallback name from config.
+    # Enrich watchlist with latest quote and sector in parallel.
     try:
         from config import WATCH_FUNDS
     except Exception:
@@ -500,14 +503,6 @@ def list_watchlist(user_id: int, quote_source: str = "auto") -> List[Dict[str, A
         get_cached_fund_sector = None
         resolve_and_cache_fund_sector = None
     try:
-        from backend.fund_sector_service import (
-            get_cached_fund_sector,
-            resolve_and_cache_fund_sector,
-        )
-    except Exception:
-        get_cached_fund_sector = None
-        resolve_and_cache_fund_sector = None
-    try:
         from backend.portfolio_service import fetch_fund_gz
     except Exception:
         fetch_fund_gz = None
@@ -516,9 +511,9 @@ def list_watchlist(user_id: int, quote_source: str = "auto") -> List[Dict[str, A
     sector_pct_fallback_enabled = (
         os.getenv("WATCHLIST_SECTOR_PCT_FALLBACK", "1").strip() == "1"
     )
-    sector_pct_fallback_map: Dict[str, float] = {}
 
-    for item in items:
+    def _enrich_single(base_item: Dict[str, Any]) -> Dict[str, Any]:
+        item = dict(base_item)
         code = str(item["code"] or "").strip()
         if not item["name"]:
             cfg = WATCH_FUNDS.get(code, {})
@@ -615,7 +610,11 @@ def list_watchlist(user_id: int, quote_source: str = "auto") -> List[Dict[str, A
                 sector_name = ""
         item["sector_name"] = sector_name or "未知板块"
 
-        if item["sector_name"] and item["sector_name"] != "未知板块" and callable(get_sector_sentiment):
+        if (
+            item["sector_name"]
+            and item["sector_name"] != "未知板块"
+            and callable(get_sector_sentiment)
+        ):
             try:
                 senti = get_sector_sentiment(item["sector_name"]) or {}
             except Exception:
@@ -625,21 +624,71 @@ def list_watchlist(user_id: int, quote_source: str = "auto") -> List[Dict[str, A
                 item["sector_pct"] = float(pct) if pct is not None else None
             except Exception:
                 item["sector_pct"] = None
+        return item
 
-        if (
-            sector_pct_fallback_enabled
-            and item["sector_pct"] is None
-            and item["sector_name"]
-            and item["sector_name"] != "未知板块"
-        ):
-            if not sector_pct_fallback_map:
-                sector_pct_fallback_map = _build_sector_pct_fallback_map()
-            item["sector_pct"] = _match_sector_pct_from_fallback(
-                item["sector_name"],
-                sector_pct_fallback_map,
-            )
+    if len(items) <= 1:
+        enriched = [_enrich_single(x) for x in items]
+    else:
+        worker_count = min(
+            max(1, int(_WATCHLIST_ENRICH_MAX_WORKERS)),
+            len(items),
+        )
+        indexed = [(i, it) for i, it in enumerate(items)]
+        ordered: List[Optional[Dict[str, Any]]] = [None] * len(indexed)
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            fut_map = {
+                pool.submit(_enrich_single, it): idx
+                for idx, it in indexed
+            }
+            try:
+                completed = set(
+                    as_completed(
+                        fut_map,
+                        timeout=float(_WATCHLIST_ENRICH_TIMEOUT_SECONDS),
+                    )
+                )
+            except FuturesTimeoutError:
+                completed = {f for f in fut_map.keys() if f.done()}
 
-    return items
+            for fut in completed:
+                idx = fut_map[fut]
+                try:
+                    ordered[idx] = fut.result()
+                except Exception:
+                    ordered[idx] = dict(indexed[idx][1])
+
+            for fut, idx in fut_map.items():
+                if ordered[idx] is not None:
+                    continue
+                try:
+                    fut.cancel()
+                except Exception:
+                    pass
+                ordered[idx] = dict(indexed[idx][1])
+
+        enriched = [x for x in ordered if isinstance(x, dict)]
+
+    if sector_pct_fallback_enabled:
+        need_fallback = any(
+            x.get("sector_pct") is None
+            and x.get("sector_name")
+            and x.get("sector_name") != "未知板块"
+            for x in enriched
+        )
+        if need_fallback:
+            sector_pct_fallback_map = _build_sector_pct_fallback_map()
+            for item in enriched:
+                if (
+                    item.get("sector_pct") is None
+                    and item.get("sector_name")
+                    and item.get("sector_name") != "未知板块"
+                ):
+                    item["sector_pct"] = _match_sector_pct_from_fallback(
+                        str(item.get("sector_name") or ""),
+                        sector_pct_fallback_map,
+                    )
+
+    return enriched
 
 
 def upsert_watchlist(user_id: int, code: str, name: str = "") -> Dict[str, Any]:
