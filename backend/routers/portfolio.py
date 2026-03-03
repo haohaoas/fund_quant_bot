@@ -51,9 +51,9 @@ def portfolio(
     if force_refresh:
         clear_fn = getattr(ps, "clear_fund_gz_cache", None)
         source_mode = str(quote_source or "").strip().lower()
-        # estimate mode is latency-sensitive; keep short-lived cache to avoid
+        # estimate/fund123 modes are latency-sensitive; keep short-lived cache to avoid
         # serial network calls timing out on portfolio page.
-        if callable(clear_fn) and source_mode != "estimate":
+        if callable(clear_fn) and source_mode not in {"estimate", "fund123"}:
             clear_fn()
     cashflow_fn = getattr(ps, "get_cashflow_summary", None)
 

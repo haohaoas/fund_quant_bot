@@ -46,7 +46,7 @@ def _norm_code(code: str) -> str:
 
 def _norm_quote_source_mode(mode: str) -> str:
     m = str(mode or "").strip().lower()
-    if m in {"auto", "estimate", "settled", "biying"}:
+    if m in {"auto", "estimate", "settled", "biying", "fund123"}:
         return m
     return "auto"
 
@@ -556,11 +556,11 @@ def list_watchlist(user_id: int, quote_source: str = "auto") -> List[Dict[str, A
             and item["name"]
         )
 
-        # estimate/biying mode should stay responsive: do not go heavy history fallback.
+        # estimate/biying/fund123 mode should stay responsive: do not go heavy history fallback.
         if (
             callable(get_fund_latest_price)
             and need_quote_fallback
-            and source_mode not in {"estimate", "biying"}
+            and source_mode not in {"estimate", "biying", "fund123"}
         ):
             try:
                 latest = get_fund_latest_price(code) or {}

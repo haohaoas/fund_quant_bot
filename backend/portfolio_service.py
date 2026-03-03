@@ -18,6 +18,8 @@ from datetime import datetime, timedelta
 import os
 import time
 import sqlite3
+import re
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 
 import requests
@@ -56,8 +58,15 @@ _OPEN_FUND_DAILY_CACHE: Dict[str, Any] = {"ts": 0.0, "data": {}}
 _ETF_SPOT_TTL_SECONDS = 120
 _ETF_SPOT_CACHE: Dict[str, Any] = {"ts": 0.0, "data": {}}
 DEFAULT_ACCOUNT_ID = 1
-_QUOTE_SOURCE_MODES = {"auto", "estimate", "settled", "biying"}
+_QUOTE_SOURCE_MODES = {"auto", "estimate", "settled", "biying", "fund123"}
 _PORTFOLIO_ENRICH_TIMEOUT_SECONDS = 8.0
+_FUND123_CONNECT_TIMEOUT_SECONDS = float(os.getenv("FUND123_CONNECT_TIMEOUT_SECONDS", "0.8"))
+_FUND123_READ_TIMEOUT_SECONDS = float(os.getenv("FUND123_READ_TIMEOUT_SECONDS", "1.5"))
+_FUND123_BOOTSTRAP_TTL_SECONDS = float(os.getenv("FUND123_BOOTSTRAP_TTL_SECONDS", "1200"))
+_FUND123_KEY_TTL_SECONDS = float(os.getenv("FUND123_KEY_TTL_SECONDS", "86400"))
+_FUND123_STATE_LOCK = threading.Lock()
+_FUND123_STATE: Dict[str, Any] = {"ts": 0.0, "csrf": "", "session": None}
+_FUND123_KEY_CACHE: Dict[str, Tuple[float, str, str]] = {}
 
 
 def clear_fund_gz_cache(code: Optional[str] = None) -> None:
@@ -290,6 +299,213 @@ def _fetch_biying_quote(code: str) -> Dict[str, Any]:
         "gztime": gztime,
         "source": "biying",
     }
+
+
+def _new_requests_session() -> requests.Session:
+    sess = requests.Session()
+    try:
+        sess.trust_env = False
+    except Exception:
+        pass
+    return sess
+
+
+def _fund123_common_headers(*, json_api: bool = False) -> Dict[str, str]:
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/121.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "zh-CN,zh;q=0.9",
+        "Origin": "https://www.fund123.cn",
+        "Referer": "https://www.fund123.cn/fund",
+        "Connection": "close",
+    }
+    if json_api:
+        headers.update(
+            {
+                "Accept": "application/json,text/plain,*/*",
+                "Content-Type": "application/json",
+                "X-API-Key": "foobar",
+            }
+        )
+    else:
+        headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    return headers
+
+
+def _fund123_bootstrap(force_refresh: bool = False) -> Tuple[Optional[requests.Session], str]:
+    now = time.time()
+    with _FUND123_STATE_LOCK:
+        sess = _FUND123_STATE.get("session")
+        csrf = str(_FUND123_STATE.get("csrf") or "").strip()
+        ts = float(_FUND123_STATE.get("ts") or 0.0)
+        if (
+            not force_refresh
+            and isinstance(sess, requests.Session)
+            and csrf
+            and (now - ts) <= _FUND123_BOOTSTRAP_TTL_SECONDS
+        ):
+            return sess, csrf
+
+        sess = _new_requests_session()
+        try:
+            resp = sess.get(
+                "https://www.fund123.cn/fund",
+                headers=_fund123_common_headers(json_api=False),
+                timeout=(
+                    _FUND123_CONNECT_TIMEOUT_SECONDS,
+                    _FUND123_READ_TIMEOUT_SECONDS,
+                ),
+                proxies={},
+            )
+            text = str(resp.text or "")
+            match = re.search(r'"csrf":"([^"]+)"', text)
+            csrf = str(match.group(1) if match else "").strip()
+            if not csrf:
+                return None, ""
+            _FUND123_STATE["session"] = sess
+            _FUND123_STATE["csrf"] = csrf
+            _FUND123_STATE["ts"] = now
+            return sess, csrf
+        except Exception:
+            return None, ""
+
+
+def _fund123_search_meta(code: str) -> Dict[str, Any]:
+    c = _norm_code6(code)
+    if not c:
+        return {}
+
+    now = time.time()
+    cached = _FUND123_KEY_CACHE.get(c)
+    if cached and (now - cached[0]) <= _FUND123_KEY_TTL_SECONDS:
+        return {"key": str(cached[1] or ""), "name": str(cached[2] or "")}
+
+    for attempt in (0, 1):
+        sess, csrf = _fund123_bootstrap(force_refresh=(attempt == 1))
+        if not isinstance(sess, requests.Session) or not csrf:
+            continue
+        try:
+            resp = sess.post(
+                "https://www.fund123.cn/api/fund/searchFund",
+                headers=_fund123_common_headers(json_api=True),
+                params={"_csrf": csrf},
+                json={"fundCode": c},
+                timeout=(
+                    _FUND123_CONNECT_TIMEOUT_SECONDS,
+                    _FUND123_READ_TIMEOUT_SECONDS,
+                ),
+                proxies={},
+            )
+            payload = resp.json()
+            if not isinstance(payload, dict) or not payload.get("success"):
+                continue
+            fund_info = payload.get("fundInfo") or {}
+            key = str(fund_info.get("key") or "").strip()
+            name = str(fund_info.get("fundName") or "").strip()
+            if not key:
+                continue
+            _FUND123_KEY_CACHE[c] = (now, key, name)
+            return {"key": key, "name": name}
+        except Exception:
+            continue
+    return {}
+
+
+def _fetch_fund123_quote(code: str) -> Dict[str, Any]:
+    c = _norm_code6(code)
+    if not c:
+        return {"ok": False, "error": "empty code"}
+
+    meta = _fund123_search_meta(c)
+    product_key = str(meta.get("key") or "").strip()
+    if not product_key:
+        return {"ok": False, "error": "fund123 key not found"}
+
+    for attempt in (0, 1):
+        sess, csrf = _fund123_bootstrap(force_refresh=(attempt == 1))
+        if not isinstance(sess, requests.Session) or not csrf:
+            continue
+        today = datetime.now().strftime("%Y-%m-%d")
+        tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        body = {
+            "startTime": today,
+            "endTime": tomorrow,
+            "limit": 200,
+            "productId": product_key,
+            "format": True,
+            "source": "WEALTHBFFWEB",
+        }
+        try:
+            resp = sess.post(
+                "https://www.fund123.cn/api/fund/queryFundEstimateIntraday",
+                headers=_fund123_common_headers(json_api=True),
+                params={"_csrf": csrf},
+                json=body,
+                timeout=(
+                    _FUND123_CONNECT_TIMEOUT_SECONDS,
+                    _FUND123_READ_TIMEOUT_SECONDS,
+                ),
+                proxies={},
+            )
+            payload = resp.json()
+        except Exception:
+            continue
+        if not isinstance(payload, dict) or not payload.get("success"):
+            continue
+
+        rows = payload.get("list") or []
+        if not isinstance(rows, list) or not rows:
+            continue
+        row = rows[-1] if isinstance(rows[-1], dict) else {}
+
+        nav = _safe_float(row.get("forecastNetValue"))
+        if nav is None:
+            nav = _safe_float(row.get("netValue"))
+        if nav is None:
+            continue
+
+        pct_raw = _safe_float(row.get("forecastGrowth"))
+        pct = None
+        if pct_raw is not None:
+            pct = float(pct_raw * 100.0) if abs(float(pct_raw)) <= 2 else float(pct_raw)
+
+        prev_nav = None
+        if pct not in (None, -100):
+            try:
+                prev_nav = float(nav) / (1.0 + float(pct) / 100.0)
+            except Exception:
+                prev_nav = None
+
+        gztime = ""
+        jzrq = today
+        try:
+            t = row.get("time")
+            if t is not None:
+                ts = float(t)
+                if ts > 1e12:
+                    ts = ts / 1000.0
+                dt = datetime.fromtimestamp(ts)
+                gztime = dt.strftime("%Y-%m-%d %H:%M")
+                jzrq = dt.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
+        return {
+            "ok": True,
+            "code": c,
+            "name": str(meta.get("name") or "").strip(),
+            "nav": float(nav),
+            "prev_nav": float(prev_nav) if prev_nav is not None else None,
+            "daily_change_pct": float(pct) if pct is not None else None,
+            "jzrq": jzrq,
+            "gztime": gztime,
+            "source": "fund123_estimate",
+        }
+
+    return {"ok": False, "error": "fund123 fetch failed"}
 
 
 def _parse_local_date(value: Any):
@@ -738,6 +954,11 @@ def fetch_fund_gz(code: str, source_mode: str = "auto") -> Dict[str, Any]:
         if by.get("ok"):
             _FUNDGZ_CACHE[cache_key] = (now, by)
             return by
+    elif mode == "fund123":
+        f123 = _fetch_fund123_quote(c)
+        if f123.get("ok"):
+            _FUNDGZ_CACHE[cache_key] = (now, f123)
+            return f123
     elif mode == "auto":
         # auto keeps existing strategy but tries Biying first when configured.
         by = _fetch_biying_quote(c)
@@ -776,6 +997,11 @@ def fetch_fund_gz(code: str, source_mode: str = "auto") -> Dict[str, Any]:
             proxies={},
         )
         if resp.status_code != 200:
+            if mode in {"auto", "fund123"}:
+                f123 = _fetch_fund123_quote(c)
+                if f123.get("ok"):
+                    _FUNDGZ_CACHE[cache_key] = (now, f123)
+                    return f123
             if mode != "estimate":
                 fb = _fallback_quote_from_settled_nav(c)
                 if fb.get("ok"):
@@ -788,6 +1014,11 @@ def fetch_fund_gz(code: str, source_mode: str = "auto") -> Dict[str, Any]:
         resp.encoding = "utf-8"
         obj = _parse_jsonp_obj(resp.text)
         if not obj:
+            if mode in {"auto", "fund123"}:
+                f123 = _fetch_fund123_quote(c)
+                if f123.get("ok"):
+                    _FUNDGZ_CACHE[cache_key] = (now, f123)
+                    return f123
             if mode != "estimate":
                 fb = _fallback_quote_from_settled_nav(c)
                 if fb.get("ok"):
@@ -843,6 +1074,11 @@ def fetch_fund_gz(code: str, source_mode: str = "auto") -> Dict[str, Any]:
         return out
 
     except Exception as e:
+        if mode in {"auto", "fund123"}:
+            f123 = _fetch_fund123_quote(c)
+            if f123.get("ok"):
+                _FUNDGZ_CACHE[cache_key] = (now, f123)
+                return f123
         if mode != "estimate":
             fb = _fallback_quote_from_settled_nav(c)
             if fb.get("ok"):
@@ -936,7 +1172,7 @@ def enrich_position(pos: Dict[str, Any], quote_source: str = "auto") -> Dict[str
     cost = _safe_float(pos.get("cost")) or 0.0
     source_mode = _norm_quote_source_mode(quote_source)
     # Fast quote modes should avoid heavy settled/sector backfill on each refresh.
-    fast_mode = source_mode in {"estimate", "biying"}
+    fast_mode = source_mode in {"estimate", "biying", "fund123"}
 
     gz = fetch_fund_gz(code, source_mode=source_mode) if code else {"ok": False}
     name = str(gz.get("name") or "").strip() if gz.get("ok") else ""

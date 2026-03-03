@@ -985,6 +985,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     switch (mode) {
       case "biying":
         return "必盈优先";
+      case "fund123":
+        return "Fund123优先";
       case "estimate":
         return "估值优先";
       case "settled":
@@ -999,10 +1001,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       final prefs = await SharedPreferences.getInstance();
       final saved =
           (prefs.getString(_quoteSourcePrefKey) ?? "").trim().toLowerCase();
-      final mode =
-          (saved == "estimate" || saved == "settled" || saved == "biying")
-              ? saved
-              : "auto";
+      final mode = (saved == "estimate" ||
+              saved == "settled" ||
+              saved == "biying" ||
+              saved == "fund123")
+          ? saved
+          : "auto";
       if (!mounted) {
         return;
       }
@@ -1058,6 +1062,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 mode: "biying",
                 title: "必盈优先",
                 subtitle: "优先必盈实时行情，失败自动回退",
+              ),
+              option(
+                mode: "fund123",
+                title: "Fund123优先",
+                subtitle: "优先 Fund123 估值，失败自动回退",
               ),
               option(
                 mode: "estimate",
