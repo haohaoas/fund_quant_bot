@@ -73,6 +73,18 @@ class AuthSession {
   }
 }
 
+class FundSearchResult {
+  const FundSearchResult({
+    required this.code,
+    required this.name,
+  });
+
+  final String code;
+  final String name;
+
+  String get displayName => name.isEmpty ? code : "$name ($code)";
+}
+
 class ApiClient {
   ApiClient({
     required this.baseUrl,
@@ -196,6 +208,134 @@ class ApiClient {
     _ensureSuccess(response, uri);
     final payload = _decodeMap(response.body);
     return NewsListResponse.fromJson(payload);
+  }
+
+  Future<List<FundSearchResult>> searchFunds(
+    String keyword, {
+    int limit = 20,
+  }) async {
+    final q = keyword.trim();
+    if (q.isEmpty) {
+      return const [];
+    }
+
+    final uri = Uri.parse(
+      "https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx",
+    ).replace(
+      queryParameters: <String, String>{
+        "m": "1",
+        "key": q,
+      },
+    );
+
+    final response = await _client.get(uri).timeout(_requestTimeout);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ApiException(
+        "Request failed: ${response.statusCode} ${response.reasonPhrase}",
+        uri: uri,
+        body: response.body,
+        statusCode: response.statusCode,
+      );
+    }
+
+    dynamic decoded;
+    try {
+      decoded = jsonDecode(response.body);
+    } catch (_) {
+      final body = response.body;
+      final left = body.indexOf("{");
+      final right = body.lastIndexOf("}");
+      if (left >= 0 && right > left) {
+        decoded = jsonDecode(body.substring(left, right + 1));
+      } else {
+        throw const FormatException("Unexpected search response");
+      }
+    }
+
+    if (decoded is! Map) {
+      return const [];
+    }
+    final map = decoded.cast<String, dynamic>();
+    final rawList = (map["Datas"] as List?) ??
+        (map["datas"] as List?) ??
+        (map["Data"] as List?) ??
+        const [];
+
+    String pickText(Map<String, dynamic> data, List<String> keys) {
+      for (final key in keys) {
+        final v = data[key];
+        if (v == null) {
+          continue;
+        }
+        final text = v.toString().trim();
+        if (text.isNotEmpty) {
+          return text;
+        }
+      }
+      return "";
+    }
+
+    final dedup = <String, FundSearchResult>{};
+    for (final raw in rawList) {
+      if (raw is! Map) {
+        continue;
+      }
+      final data = raw.cast<String, dynamic>();
+      var code = pickText(data, const [
+        "CODE",
+        "Code",
+        "code",
+        "FundCode",
+        "fund_code",
+      ]);
+      if (code.isEmpty) {
+        final baseInfo =
+            pickText(data, const ["FundBaseInfo", "fund_base_info"]);
+        final match = RegExp(r"(\d{6})").firstMatch(baseInfo);
+        if (match != null) {
+          code = match.group(1) ?? "";
+        }
+      }
+      final matchCode = RegExp(r"(\d{6})").firstMatch(code);
+      code = matchCode?.group(1) ?? code;
+      if (code.isEmpty) {
+        continue;
+      }
+
+      var name = pickText(data, const [
+        "NAME",
+        "Name",
+        "name",
+        "SHORTNAME",
+        "ShortName",
+      ]);
+      if (name.isEmpty) {
+        final baseInfo =
+            pickText(data, const ["FundBaseInfo", "fund_base_info"]);
+        final fields = baseInfo
+            .split(RegExp(r"[\t|,]"))
+            .map((e) => e.trim())
+            .where((e) => e.isNotEmpty)
+            .toList();
+        if (fields.isNotEmpty) {
+          final nonCode = fields.firstWhere(
+            (f) => !RegExp(r"^\d{6}$").hasMatch(f),
+            orElse: () => "",
+          );
+          if (nonCode.isNotEmpty) {
+            name = nonCode;
+          }
+        }
+      }
+      dedup[code] = FundSearchResult(code: code, name: name);
+      if (dedup.length >= limit) {
+        break;
+      }
+    }
+
+    final values = dedup.values.toList();
+    values.sort((a, b) => a.code.compareTo(b.code));
+    return values;
   }
 
   Future<SectorFlowResponse> fetchSectorFlow({

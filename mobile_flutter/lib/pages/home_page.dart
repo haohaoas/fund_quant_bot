@@ -94,6 +94,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   static const List<String> _actions = <String>["BUY", "SELL", "SIP", "REDEEM"];
   static const Duration _autoRefreshInterval = Duration(seconds: 5);
   static const String _quoteSourcePrefKey = "quote_source_mode";
+  static const String _fundSearchHistoryPrefKey = "fund_search_history_v1";
 
   final NumberFormat _numberFormat = NumberFormat("#,##0.00", "zh_CN");
 
@@ -513,13 +514,97 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
+  Future<List<FundSearchResult>> _loadFundSearchHistory() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getStringList(_fundSearchHistoryPrefKey) ?? const [];
+      final out = <FundSearchResult>[];
+      for (final item in raw) {
+        final parts = item.split("|");
+        if (parts.isEmpty) {
+          continue;
+        }
+        final code = parts.first.trim();
+        if (code.isEmpty) {
+          continue;
+        }
+        final name = parts.length > 1 ? parts.sublist(1).join("|").trim() : "";
+        out.add(FundSearchResult(code: code, name: name));
+      }
+      return out;
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  Future<void> _saveFundSearchHistory(FundSearchResult item) async {
+    final code = item.code.trim();
+    if (code.isEmpty) {
+      return;
+    }
+    final encoded = "$code|${item.name.trim()}";
+    final existing = await _loadFundSearchHistory();
+    final merged = <String>[
+      encoded,
+      ...existing
+          .where((e) => e.code.trim() != code)
+          .map((e) => "${e.code.trim()}|${e.name.trim()}"),
+    ].take(20).toList();
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(_fundSearchHistoryPrefKey, merged);
+    } catch (_) {
+      // ignore write failure
+    }
+  }
+
+  Future<void> _clearFundSearchHistory() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_fundSearchHistoryPrefKey);
+    } catch (_) {
+      // ignore
+    }
+  }
+
+  Future<FundSearchResult?> _openFundSearchPage({
+    String initialKeyword = "",
+  }) async {
+    final history = await _loadFundSearchHistory();
+    if (!mounted) {
+      return null;
+    }
+    final picked = await Navigator.of(context).push<FundSearchResult>(
+      MaterialPageRoute(
+        builder: (_) => _FundSearchPage(
+          apiClient: widget.apiClient,
+          initialKeyword: initialKeyword,
+          initialHistory: history,
+          onClearHistory: _clearFundSearchHistory,
+        ),
+      ),
+    );
+    if (picked != null) {
+      await _saveFundSearchHistory(picked);
+    }
+    return picked;
+  }
+
   Future<_AddInvestmentDraft?> _showAddHoldingSheet() async {
+    final quickFunds = _buildWatchlistDisplayItems();
+    final quickByCode = <String, _WatchlistDisplayItem>{
+      for (final fund in quickFunds) fund.code: fund,
+    };
     final codeController = TextEditingController();
     final amountController = TextEditingController();
     final navController = TextEditingController();
 
     String selectedAction = _actions.first;
+    String selectedQuickCode = "";
+    String selectedFundName = "";
     String? formError;
+    const quickAmounts = <double>[100, 300, 500, 1000, 2000];
 
     final draft = await showModalBottomSheet<_AddInvestmentDraft>(
       context: context,
@@ -527,8 +612,30 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       builder: (sheetContext) {
         return StatefulBuilder(
           builder: (context, setSheetState) {
+            String normalizeCode(String raw) {
+              final text = raw.trim();
+              final match = RegExp(r"(\d{6})").firstMatch(text);
+              if (match != null) {
+                return match.group(1) ?? text;
+              }
+              return text;
+            }
+
+            void applyQuickFund(_WatchlistDisplayItem fund) {
+              setSheetState(() {
+                selectedQuickCode = fund.code;
+                selectedFundName = fund.name.trim();
+                codeController.text = fund.code;
+                if (navController.text.trim().isEmpty &&
+                    fund.latestPrice != null) {
+                  navController.text = fund.latestPrice!.toStringAsFixed(4);
+                }
+                formError = null;
+              });
+            }
+
             void submit() {
-              final code = codeController.text.trim();
+              final code = normalizeCode(codeController.text);
               final amountText = amountController.text.trim();
               final navText = navController.text.trim();
 
@@ -580,11 +687,68 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
                   ),
                   const SizedBox(height: 12),
+                  if (quickFunds.isNotEmpty) ...[
+                    const Text(
+                      "快捷选择（自选/持有）",
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: Color(0xFF6C7387),
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: [
+                          for (final fund in quickFunds.take(12))
+                            Padding(
+                              padding: const EdgeInsets.only(right: 8),
+                              child: ChoiceChip(
+                                label: Text(
+                                  fund.displayName,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                selected: selectedQuickCode == fund.code,
+                                onSelected: (_) => applyQuickFund(fund),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                  ],
                   TextField(
                     controller: codeController,
-                    decoration: const InputDecoration(
-                      labelText: "基金代码",
-                      border: OutlineInputBorder(),
+                    readOnly: true,
+                    onTap: () async {
+                      final picked = await _openFundSearchPage(
+                        initialKeyword: codeController.text.trim(),
+                      );
+                      if (picked == null) {
+                        return;
+                      }
+                      setSheetState(() {
+                        selectedQuickCode = picked.code;
+                        selectedFundName = picked.name;
+                        codeController.text = picked.code;
+                        if (navController.text.trim().isEmpty) {
+                          final quick = quickByCode[picked.code];
+                          if (quick?.latestPrice != null) {
+                            navController.text =
+                                quick!.latestPrice!.toStringAsFixed(4);
+                          }
+                        }
+                        formError = null;
+                      });
+                    },
+                    decoration: InputDecoration(
+                      labelText: "基金代码（点击选择）",
+                      helperText: selectedFundName.isEmpty
+                          ? "支持搜索历史，快速回填"
+                          : selectedFundName,
+                      suffixIcon: const Icon(Icons.search_rounded),
+                      border: const OutlineInputBorder(),
                       isDense: true,
                     ),
                   ),
@@ -614,23 +778,65 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     controller: amountController,
                     keyboardType:
                         const TextInputType.numberWithOptions(decimal: true),
+                    textInputAction: TextInputAction.next,
+                    onChanged: (_) {
+                      setSheetState(() {
+                        formError = null;
+                      });
+                    },
                     decoration: const InputDecoration(
-                      labelText: "金额",
+                      labelText: "金额（元）",
                       border: OutlineInputBorder(),
                       isDense: true,
                     ),
+                  ),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 6,
+                    children: [
+                      for (final value in quickAmounts)
+                        ChoiceChip(
+                          label: Text("¥${value.toStringAsFixed(0)}"),
+                          selected: amountController.text.trim() ==
+                              value.toStringAsFixed(0),
+                          onSelected: (_) {
+                            setSheetState(() {
+                              amountController.text = value.toStringAsFixed(0);
+                              formError = null;
+                            });
+                          },
+                        ),
+                    ],
                   ),
                   const SizedBox(height: 10),
                   TextField(
                     controller: navController,
                     keyboardType:
                         const TextInputType.numberWithOptions(decimal: true),
+                    textInputAction: TextInputAction.done,
+                    onChanged: (_) {
+                      setSheetState(() {
+                        formError = null;
+                      });
+                    },
                     decoration: const InputDecoration(
-                      labelText: "净值（可选）",
+                      labelText: "净值（可选，默认可留空自动取）",
                       border: OutlineInputBorder(),
                       isDense: true,
                     ),
                   ),
+                  if (selectedQuickCode.isNotEmpty &&
+                      quickByCode[selectedQuickCode]?.latestPrice != null) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      "已带出参考净值 ${quickByCode[selectedQuickCode]!.latestPrice!.toStringAsFixed(4)}",
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF6C7387),
+                      ),
+                    ),
+                  ],
                   if (formError != null) ...[
                     const SizedBox(height: 8),
                     Text(
@@ -1820,6 +2026,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final codeController = TextEditingController();
     final nameController = TextEditingController();
     String? errorText;
+    String selectedName = "";
 
     final result = await showDialog<(String, String)>(
       context: context,
@@ -1845,9 +2052,30 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 children: [
                   TextField(
                     controller: codeController,
-                    decoration: const InputDecoration(
-                      labelText: "基金代码",
-                      border: OutlineInputBorder(),
+                    readOnly: true,
+                    onTap: () async {
+                      final picked = await _openFundSearchPage(
+                        initialKeyword: codeController.text.trim(),
+                      );
+                      if (picked == null) {
+                        return;
+                      }
+                      setDialogState(() {
+                        codeController.text = picked.code;
+                        selectedName = picked.name;
+                        if (nameController.text.trim().isEmpty &&
+                            picked.name.trim().isNotEmpty) {
+                          nameController.text = picked.name.trim();
+                        }
+                        errorText = null;
+                      });
+                    },
+                    decoration: InputDecoration(
+                      labelText: "基金代码（点击选择）",
+                      helperText:
+                          selectedName.isEmpty ? "支持搜索历史" : selectedName,
+                      suffixIcon: const Icon(Icons.search_rounded),
+                      border: const OutlineInputBorder(),
                       isDense: true,
                     ),
                   ),
@@ -2934,6 +3162,238 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _FundSearchPage extends StatefulWidget {
+  const _FundSearchPage({
+    required this.apiClient,
+    required this.initialKeyword,
+    required this.initialHistory,
+    required this.onClearHistory,
+  });
+
+  final ApiClient apiClient;
+  final String initialKeyword;
+  final List<FundSearchResult> initialHistory;
+  final Future<void> Function() onClearHistory;
+
+  @override
+  State<_FundSearchPage> createState() => _FundSearchPageState();
+}
+
+class _FundSearchPageState extends State<_FundSearchPage> {
+  late final TextEditingController _controller;
+  Timer? _debounce;
+  bool _loading = false;
+  String? _error;
+  List<FundSearchResult> _results = const [];
+  List<FundSearchResult> _history = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialKeyword);
+    _history = widget.initialHistory;
+    if (widget.initialKeyword.trim().isNotEmpty) {
+      unawaited(_runSearch(widget.initialKeyword));
+    }
+  }
+
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _onChanged(String text) {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 260), () {
+      unawaited(_runSearch(text));
+    });
+  }
+
+  Future<void> _runSearch(String raw) async {
+    final keyword = raw.trim();
+    if (keyword.isEmpty) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _results = const [];
+        _error = null;
+        _loading = false;
+      });
+      return;
+    }
+
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final items = await widget.apiClient.searchFunds(keyword, limit: 30);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _results = items;
+        _loading = false;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _error = error.toString();
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _clearHistory() async {
+    await widget.onClearHistory();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _history = const [];
+    });
+  }
+
+  void _pick(FundSearchResult item) {
+    Navigator.of(context).pop(item);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final keyword = _controller.text.trim();
+    final showHistory = keyword.isEmpty;
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text("搜索基金"),
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+            child: TextField(
+              controller: _controller,
+              autofocus: true,
+              onChanged: _onChanged,
+              decoration: InputDecoration(
+                hintText: "输入基金代码或名称",
+                prefixIcon: const Icon(Icons.search_rounded),
+                suffixIcon: keyword.isEmpty
+                    ? null
+                    : IconButton(
+                        onPressed: () {
+                          _controller.clear();
+                          _onChanged("");
+                        },
+                        icon: const Icon(Icons.close_rounded),
+                      ),
+                border: const OutlineInputBorder(),
+                isDense: true,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Builder(
+              builder: (_) {
+                if (_loading) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                if (_error != null && _error!.isNotEmpty) {
+                  return Center(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 20),
+                      child: Text(
+                        "搜索失败：$_error",
+                        style: const TextStyle(color: Color(0xFFB42318)),
+                      ),
+                    ),
+                  );
+                }
+
+                if (showHistory) {
+                  if (_history.isEmpty) {
+                    return const Center(
+                      child: Text(
+                        "暂无搜索历史",
+                        style: TextStyle(color: Color(0xFF7B8599)),
+                      ),
+                    );
+                  }
+                  return Column(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 4, 6, 4),
+                        child: Row(
+                          children: [
+                            const Text(
+                              "搜索历史",
+                              style: TextStyle(
+                                fontWeight: FontWeight.w700,
+                                color: Color(0xFF1F2A44),
+                              ),
+                            ),
+                            const Spacer(),
+                            TextButton(
+                              onPressed: _clearHistory,
+                              child: const Text("清空"),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Expanded(
+                        child: ListView.builder(
+                          itemCount: _history.length,
+                          itemBuilder: (context, index) {
+                            final item = _history[index];
+                            return ListTile(
+                              leading: const Icon(Icons.history,
+                                  color: Color(0xFF9AA1B2)),
+                              title: Text(
+                                  item.name.isEmpty ? item.code : item.name),
+                              subtitle: Text(item.code),
+                              onTap: () => _pick(item),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  );
+                }
+
+                if (_results.isEmpty) {
+                  return const Center(
+                    child: Text(
+                      "未找到匹配基金",
+                      style: TextStyle(color: Color(0xFF7B8599)),
+                    ),
+                  );
+                }
+
+                return ListView.builder(
+                  itemCount: _results.length,
+                  itemBuilder: (context, index) {
+                    final item = _results[index];
+                    return ListTile(
+                      leading: const Icon(Icons.search_rounded),
+                      title: Text(item.name.isEmpty ? item.code : item.name),
+                      subtitle: Text(item.code),
+                      onTap: () => _pick(item),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
       ),
     );
   }
