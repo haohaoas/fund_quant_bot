@@ -1373,6 +1373,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     return marketValue - dailyProfit;
   }
 
+  double? _investedPositionValue(PortfolioPosition position) {
+    final shares = position.shares;
+    final cost = position.cost;
+    if (shares <= 0 || cost <= 0) {
+      return null;
+    }
+    return shares * cost;
+  }
+
   Widget _buildErrorCard(String? error) {
     if (error == null) {
       return const SizedBox.shrink();
@@ -1821,7 +1830,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         children: [
           Expanded(
             flex: 5,
-            child: Text("基金/市值", style: TextStyle(color: Color(0xFF7B8599))),
+            child: Text("基金/投入", style: TextStyle(color: Color(0xFF7B8599))),
           ),
           Expanded(
             flex: 2,
@@ -1928,12 +1937,23 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                               Row(
                                 children: [
                                   Text(
-                                    "¥ ${_settledPositionValue(position) == null ? "--" : _fmt(_settledPositionValue(position)!)}",
+                                    "¥ ${_investedPositionValue(position) == null ? "--" : _fmt(_investedPositionValue(position)!)}",
                                     style: const TextStyle(
                                       color: Color(0xFF7B8599),
                                       fontSize: 14,
                                     ),
                                   ),
+                                  if (_settledPositionValue(position) !=
+                                      null) ...[
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      "市值 ¥${_fmt(_settledPositionValue(position)!)}",
+                                      style: const TextStyle(
+                                        color: Color(0xFF9AA3B8),
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  ],
                                   if (position.navSettled) ...[
                                     const SizedBox(width: 6),
                                     Container(
