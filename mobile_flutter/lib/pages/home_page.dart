@@ -1937,23 +1937,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                               Row(
                                 children: [
                                   Text(
-                                    "¥ ${_investedPositionValue(position) == null ? "--" : _fmt(_investedPositionValue(position)!)}",
+                                    "投入 ¥${_investedPositionValue(position) == null ? "--" : _fmt(_investedPositionValue(position)!)}",
                                     style: const TextStyle(
                                       color: Color(0xFF7B8599),
                                       fontSize: 14,
                                     ),
                                   ),
-                                  if (_settledPositionValue(position) !=
-                                      null) ...[
-                                    const SizedBox(width: 6),
-                                    Text(
-                                      "市值 ¥${_fmt(_settledPositionValue(position)!)}",
-                                      style: const TextStyle(
-                                        color: Color(0xFF9AA3B8),
-                                        fontSize: 12,
-                                      ),
-                                    ),
-                                  ],
                                   if (position.navSettled) ...[
                                     const SizedBox(width: 6),
                                     Container(
