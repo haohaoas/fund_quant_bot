@@ -698,7 +698,7 @@ class ApiClient {
         .toList();
   }
 
-  Future<void> createInvestment({
+  Future<Map<String, dynamic>> createInvestment({
     required String code,
     required double amount,
     required String action,
@@ -724,6 +724,7 @@ class ApiClient {
         )
         .timeout(_requestTimeout);
     _ensureSuccess(response, uri);
+    return _decodeMap(response.body);
   }
 
   Future<void> deletePosition(String code, {int? accountId}) async {

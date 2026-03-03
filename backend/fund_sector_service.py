@@ -182,8 +182,9 @@ def set_cached_fund_sector(code: str, sector: str, source: str) -> None:
     old_sector = str(existing.get("sector") or "").strip()
     old_source = str(existing.get("source") or "").strip()
 
-    # Never downgrade a known sector into "unknown" during background refresh.
-    if old_sector and old_sector != "未知板块" and s == "未知板块":
+    # Once a known sector is stored, keep it stable unless user sets it manually.
+    # This avoids background refreshes flipping sector names unexpectedly.
+    if old_sector and old_sector != "未知板块" and src != "manual":
         return
 
     # Preserve manual override unless explicitly rewritten by manual source.
