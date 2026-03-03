@@ -594,9 +594,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Future<_AddInvestmentDraft?> _showAddHoldingSheet() async {
     final quickFunds = _buildWatchlistDisplayItems();
-    final quickByCode = <String, _WatchlistDisplayItem>{
-      for (final fund in quickFunds) fund.code: fund,
-    };
     final codeController = TextEditingController();
     final amountController = TextEditingController();
     final navController = TextEditingController();
@@ -627,10 +624,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 selectedQuickCode = fund.code;
                 selectedFundName = fund.name.trim();
                 codeController.text = fund.code;
-                if (navController.text.trim().isEmpty &&
-                    fund.latestPrice != null) {
-                  navController.text = fund.latestPrice!.toStringAsFixed(4);
-                }
                 formError = null;
               });
             }
@@ -733,13 +726,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                         selectedQuickCode = picked.code;
                         selectedFundName = picked.name;
                         codeController.text = picked.code;
-                        if (navController.text.trim().isEmpty) {
-                          final quick = quickByCode[picked.code];
-                          if (quick?.latestPrice != null) {
-                            navController.text =
-                                quick!.latestPrice!.toStringAsFixed(4);
-                          }
-                        }
                         formError = null;
                       });
                     },
@@ -822,22 +808,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                       });
                     },
                     decoration: const InputDecoration(
-                      labelText: "净值（可选，默认可留空自动取）",
+                      labelText: "净值（可选，留空按昨净值）",
                       border: OutlineInputBorder(),
                       isDense: true,
                     ),
                   ),
-                  if (selectedQuickCode.isNotEmpty &&
-                      quickByCode[selectedQuickCode]?.latestPrice != null) ...[
-                    const SizedBox(height: 6),
-                    Text(
-                      "已带出参考净值 ${quickByCode[selectedQuickCode]!.latestPrice!.toStringAsFixed(4)}",
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: Color(0xFF6C7387),
-                      ),
-                    ),
-                  ],
                   if (formError != null) ...[
                     const SizedBox(height: 8),
                     Text(

@@ -187,9 +187,23 @@ def create_investment(
     trade_value = abs(amount)
 
     price = float(payload.nav) if payload.nav is not None else None
+    fetch_fn = getattr(ps, "fetch_fund_gz", None)
+    gz = fetch_fn(code) if callable(fetch_fn) else None
+    if isinstance(gz, dict) and gz.get("ok"):
+        # Intraday BUY/SIP should use settled prev_nav as pricing anchor.
+        # This guarantees "input amount == immediate shown value" before nightly update.
+        try:
+            is_settled = bool(ps._is_nav_settled(gz))  # type: ignore[attr-defined]
+        except Exception:
+            is_settled = False
+        try:
+            prev_nav = float(gz.get("prev_nav") or 0.0)
+        except Exception:
+            prev_nav = 0.0
+        if action in ("BUY", "SIP") and (not is_settled) and prev_nav > 0:
+            price = prev_nav
+
     if price is None:
-        fetch_fn = getattr(ps, "fetch_fund_gz", None)
-        gz = fetch_fn(code) if callable(fetch_fn) else None
         if isinstance(gz, dict) and gz.get("ok"):
             try:
                 price = float(gz.get("prev_nav") or gz.get("nav") or 0.0)
