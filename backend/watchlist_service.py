@@ -16,6 +16,15 @@ _SECTOR_GRID_STEP_PCT = float(os.getenv("WATCHLIST_SECTOR_GRID_STEP_PCT", "0.5")
 _SECTOR_GRID_LEVELS = int(os.getenv("WATCHLIST_SECTOR_GRID_LEVELS", "4"))
 _WATCHLIST_ENRICH_TIMEOUT_SECONDS = float(os.getenv("WATCHLIST_ENRICH_TIMEOUT_SEC", "8"))
 _WATCHLIST_ENRICH_MAX_WORKERS = int(os.getenv("WATCHLIST_ENRICH_MAX_WORKERS", "6"))
+_ANALYZE_SECTOR_RESOLVE_TIMEOUT_SECONDS = float(os.getenv("WATCHLIST_ANALYZE_SECTOR_RESOLVE_TIMEOUT_SEC", "1.2"))
+_ANALYZE_SECTOR_SENTIMENT_TIMEOUT_SECONDS = float(os.getenv("WATCHLIST_ANALYZE_SECTOR_SENTIMENT_TIMEOUT_SEC", "1.8"))
+_ANALYZE_AI_TIMEOUT_SECONDS = float(os.getenv("WATCHLIST_ANALYZE_AI_TIMEOUT_SEC", "3.0"))
+_ANALYZE_ALLOW_HEAVY_SECTOR_RESOLVE = (
+    os.getenv("WATCHLIST_ANALYZE_ALLOW_HEAVY_SECTOR_RESOLVE", "0").strip() == "1"
+)
+_ANALYZE_SECTOR_PCT_FALLBACK_ENABLED = (
+    os.getenv("WATCHLIST_ANALYZE_SECTOR_PCT_FALLBACK", "0").strip() == "1"
+)
 
 
 def _norm_user_id(user_id: int) -> int:
@@ -490,9 +499,8 @@ def list_watchlist(user_id: int, quote_source: str = "auto") -> List[Dict[str, A
         get_fund_latest_price = None
         get_fund_name = None
     try:
-        from sector import get_sector_by_fund, get_sector_sentiment
+        from sector import get_sector_sentiment
     except Exception:
-        get_sector_by_fund = None
         get_sector_sentiment = None
     try:
         from backend.fund_sector_service import (
@@ -635,7 +643,8 @@ def list_watchlist(user_id: int, quote_source: str = "auto") -> List[Dict[str, A
         )
         indexed = [(i, it) for i, it in enumerate(items)]
         ordered: List[Optional[Dict[str, Any]]] = [None] * len(indexed)
-        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+        pool = ThreadPoolExecutor(max_workers=worker_count)
+        try:
             fut_map = {
                 pool.submit(_enrich_single, it): idx
                 for idx, it in indexed
@@ -665,6 +674,11 @@ def list_watchlist(user_id: int, quote_source: str = "auto") -> List[Dict[str, A
                 except Exception:
                     pass
                 ordered[idx] = dict(indexed[idx][1])
+        finally:
+            try:
+                pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
 
         enriched = [x for x in ordered if isinstance(x, dict)]
 
@@ -901,23 +915,31 @@ def analyze_fund(
                 sector_name = ""
         except Exception:
             sector_name = ""
-    if (not sector_name) and callable(resolve_and_cache_fund_sector):
+    # Heavy sector resolve can be very slow; default OFF on analyze endpoint.
+    if (
+        (not sector_name)
+        and _ANALYZE_ALLOW_HEAVY_SECTOR_RESOLVE
+        and callable(resolve_and_cache_fund_sector)
+    ):
         try:
-            sector_name = str(
-                resolve_and_cache_fund_sector(
+            pool = ThreadPoolExecutor(max_workers=1)
+            try:
+                fut = pool.submit(
+                    resolve_and_cache_fund_sector,
                     c,
                     fund_name=display_name,
                     force_refresh=False,
                 )
-                or ""
-            ).strip()
+                sector_name = str(
+                    fut.result(timeout=_ANALYZE_SECTOR_RESOLVE_TIMEOUT_SECONDS) or ""
+                ).strip()
+            finally:
+                try:
+                    pool.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
             if sector_name == "未知板块":
                 sector_name = ""
-        except Exception:
-            sector_name = ""
-    if (not sector_name) and callable(get_sector_by_fund):
-        try:
-            sector_name = str(get_sector_by_fund(c) or "").strip()
         except Exception:
             sector_name = ""
 
@@ -934,7 +956,15 @@ def analyze_fund(
     )
     if sector_live_enabled and callable(get_sector_sentiment):
         try:
-            raw_sector_info = get_sector_sentiment(sector_name) or {}
+            pool = ThreadPoolExecutor(max_workers=1)
+            try:
+                fut = pool.submit(get_sector_sentiment, sector_name)
+                raw_sector_info = fut.result(timeout=_ANALYZE_SECTOR_SENTIMENT_TIMEOUT_SECONDS) or {}
+            finally:
+                try:
+                    pool.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
             if isinstance(raw_sector_info, dict):
                 sector_info = {
                     "sector": str(
@@ -950,6 +980,8 @@ def analyze_fund(
 
     # Fallback resolve sector pct from full board lists/flow lists.
     if (
+        _ANALYZE_SECTOR_PCT_FALLBACK_ENABLED
+        and
         sector_info.get("sector")
         and str(sector_info.get("sector") or "").strip() != "未知板块"
         and _to_float_or_none(sector_info.get("flow_pct")) is None
@@ -974,19 +1006,28 @@ def analyze_fund(
     }
     if ai_enabled and callable(ask_deepseek_fund_decision):
         try:
-            ai_resp = ask_deepseek_fund_decision(
-                fund_name=display_name or c,
-                code=c,
-                latest={
-                    "price": price_f,
-                    "pct": pct_f,
-                    "time": latest.get("time"),
-                    "source": latest.get("source"),
-                },
-                quant_signal=signal,
-                sector_info=sector_info,
-                fund_profile=None,
-            )
+            pool = ThreadPoolExecutor(max_workers=1)
+            try:
+                fut = pool.submit(
+                    ask_deepseek_fund_decision,
+                    fund_name=display_name or c,
+                    code=c,
+                    latest={
+                        "price": price_f,
+                        "pct": pct_f,
+                        "time": latest.get("time"),
+                        "source": latest.get("source"),
+                    },
+                    quant_signal=signal,
+                    sector_info=sector_info,
+                    fund_profile=None,
+                )
+                ai_resp = fut.result(timeout=_ANALYZE_AI_TIMEOUT_SECONDS)
+            finally:
+                try:
+                    pool.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
             if isinstance(ai_resp, dict):
                 ai = {
                     "action": str(
@@ -994,6 +1035,11 @@ def analyze_fund(
                     ),
                     "reason": str(ai_resp.get("reason") or ""),
                 }
+        except FuturesTimeoutError:
+            ai = {
+                "action": str(signal.get("action") or "HOLD"),
+                "reason": "AI 超时，已返回板块量化结果。",
+            }
         except Exception:
             ai = {
                 "action": str(signal.get("action") or "HOLD"),

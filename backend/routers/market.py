@@ -121,7 +121,8 @@ def sector_fund_flow(
     provider: Optional[str] = None,
 ):
     try:
-        with ThreadPoolExecutor(max_workers=1) as pool:
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
             fut = pool.submit(
                 _get_sector_fund_flow_cached,
                 indicator=indicator,
@@ -130,6 +131,11 @@ def sector_fund_flow(
                 provider=provider,
             )
             res = fut.result(timeout=_FLOW_FETCH_TIMEOUT_SECONDS)
+        finally:
+            try:
+                pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
     except FuturesTimeoutError:
         res = _get_sector_fund_flow_stale_only(
             indicator=indicator,
@@ -157,7 +163,8 @@ def dashboard(
     provider: Optional[str] = None,
 ):
     try:
-        with ThreadPoolExecutor(max_workers=1) as pool:
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
             fut = pool.submit(
                 _get_sector_fund_flow_cached,
                 indicator=indicator,
@@ -166,6 +173,11 @@ def dashboard(
                 provider=provider,
             )
             data = fut.result(timeout=_FLOW_FETCH_TIMEOUT_SECONDS)
+        finally:
+            try:
+                pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
     except FuturesTimeoutError:
         data = _get_sector_fund_flow_stale_only(
             indicator=indicator,

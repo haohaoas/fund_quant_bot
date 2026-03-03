@@ -56,9 +56,15 @@ def get_news_list(limit: int = 40):
                 headers={"Content-Type": "application/json; charset=utf-8"},
             )
     try:
-        with ThreadPoolExecutor(max_workers=1) as pool:
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
             fut = pool.submit(news_sentiment.fetch_finance_news, limit=size)
             rows = fut.result(timeout=_NEWS_FETCH_TIMEOUT_SECONDS) or []
+        finally:
+            try:
+                pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
         items: List[Dict[str, Any]] = []
         for row in rows:
             if not isinstance(row, dict):

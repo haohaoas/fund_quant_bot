@@ -1286,7 +1286,8 @@ def list_positions(account_id: Optional[int] = None, quote_source: str = "auto")
 
     indexed_rows = [(idx, dict(r)) for idx, r in enumerate(rows)]
     ordered: List[Optional[Dict[str, Any]]] = [None] * len(indexed_rows)
-    with ThreadPoolExecutor(max_workers=worker_count) as pool:
+    pool = ThreadPoolExecutor(max_workers=worker_count)
+    try:
         fut_map = {
             pool.submit(enrich_position, row, quote_source=quote_source): idx
             for idx, row in indexed_rows
@@ -1338,6 +1339,11 @@ def list_positions(account_id: Optional[int] = None, quote_source: str = "auto")
                 }
             )
             ordered[idx] = fallback
+    finally:
+        try:
+            pool.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
 
     return [x for x in ordered if isinstance(x, dict)]
 

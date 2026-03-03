@@ -89,7 +89,8 @@ def portfolio(
 
     classic_positions = []
     cashflow: Dict[str, Any] = {"inflow": 0.0, "outflow": 0.0, "net": 0.0, "trades": 0.0}
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    pool = ThreadPoolExecutor(max_workers=2)
+    try:
         f_pos = pool.submit(ps.list_positions, account_id=aid, quote_source=quote_source)
         if callable(cashflow_fn):
             f_flow = pool.submit(cashflow_fn, days=3650, account_id=aid)
@@ -117,6 +118,11 @@ def portfolio(
             cashflow = _build_cashflow_fallback()
         except Exception:
             cashflow = _build_cashflow_fallback()
+    finally:
+        try:
+            pool.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
 
     total_mv = 0.0
     total_daily_profit = 0.0

@@ -32,9 +32,15 @@ def get_watchlist(
 ):
     uid = int(user["id"])
     try:
-        with ThreadPoolExecutor(max_workers=1) as pool:
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
             fut = pool.submit(ws.list_watchlist, uid, quote_source)
             items = fut.result(timeout=_WATCHLIST_ROUTE_TIMEOUT_SECONDS)
+        finally:
+            try:
+                pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
     except FuturesTimeoutError:
         items = []
     except Exception:
@@ -92,7 +98,8 @@ def analyze_watchlist_fund(
 ):
     _ = user
     try:
-        with ThreadPoolExecutor(max_workers=1) as pool:
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
             fut = pool.submit(
                 ws.analyze_fund,
                 code=code,
@@ -101,20 +108,51 @@ def analyze_watchlist_fund(
                 include_ai=include_ai,
             )
             result = fut.result(timeout=_WATCHLIST_ROUTE_TIMEOUT_SECONDS)
+        finally:
+            try:
+                pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
     except FuturesTimeoutError:
         # Degrade to no-AI variant to keep UX responsive.
         try:
-            result = ws.analyze_fund(
-                code=code,
-                name=name or "",
-                quote_source=quote_source,
-                include_ai=False,
-            )
+            pool2 = ThreadPoolExecutor(max_workers=1)
+            try:
+                fut2 = pool2.submit(
+                    ws.analyze_fund,
+                    code=code,
+                    name=name or "",
+                    quote_source=quote_source,
+                    include_ai=False,
+                )
+                result = fut2.result(timeout=3.0)
+            finally:
+                try:
+                    pool2.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
             ai = result.get("ai_decision") or {}
             ai["reason"] = "分析超时，已返回无AI快速结果。"
             result["ai_decision"] = ai
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"analyze timeout: {type(e).__name__}: {e}")
+        except Exception:
+            # Last-resort lightweight payload (keep schema compatible).
+            result = {
+                "generated_at": "",
+                "code": str(code or ""),
+                "name": str(name or code or ""),
+                "latest": {"price": None, "pct": None, "time": "", "source": ""},
+                "signal": {
+                    "action": "HOLD",
+                    "position_hint": "KEEP",
+                    "hit_level": None,
+                    "price_vs_base_pct": None,
+                    "reason": "分析服务繁忙，请稍后重试。",
+                    "base_price": None,
+                    "grids": [],
+                },
+                "sector": {"name": "未知板块", "score": 50, "flow_pct": None, "level": "中性", "comment": ""},
+                "ai_decision": {"action": "HOLD", "reason": "分析超时，已返回占位结果。"},
+            }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
