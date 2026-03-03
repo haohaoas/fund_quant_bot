@@ -808,6 +808,7 @@ def set_watchlist_sector(
             )
 
     from backend.fund_sector_service import (
+        delete_cached_fund_sector,
         get_cached_fund_sector,
         resolve_and_cache_fund_sector,
         set_cached_fund_sector,
@@ -817,6 +818,8 @@ def set_watchlist_sector(
         set_cached_fund_sector(c, manual_sector, "manual")
     else:
         # Empty input means "restore auto detection".
+        # Remove existing cache row first so manual pin (if any) can be cleared.
+        delete_cached_fund_sector(c)
         resolve_and_cache_fund_sector(c, fund_name=display_name, force_refresh=True)
 
     cached = get_cached_fund_sector(c) or {}

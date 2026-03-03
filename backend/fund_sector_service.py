@@ -174,8 +174,22 @@ def get_cached_fund_sector(code: str) -> Optional[Dict[str, str]]:
 def set_cached_fund_sector(code: str, sector: str, source: str) -> None:
     c = _norm_fund_code(code)
     s = str(sector or "").strip()
+    src = str(source or "").strip()
     if not c:
         return
+
+    existing = get_cached_fund_sector(c) or {}
+    old_sector = str(existing.get("sector") or "").strip()
+    old_source = str(existing.get("source") or "").strip()
+
+    # Never downgrade a known sector into "unknown" during background refresh.
+    if old_sector and old_sector != "未知板块" and s == "未知板块":
+        return
+
+    # Preserve manual override unless explicitly rewritten by manual source.
+    if old_source == "manual" and src != "manual":
+        return
+
     with get_conn() as conn:
         conn.execute(
             """
@@ -186,8 +200,16 @@ def set_cached_fund_sector(code: str, sector: str, source: str) -> None:
                 source = excluded.source,
                 updated_at = datetime('now','localtime')
             """,
-            (c, s, str(source or "").strip()),
+            (c, s, src),
         )
+
+
+def delete_cached_fund_sector(code: str) -> None:
+    c = _norm_fund_code(code)
+    if not c:
+        return
+    with get_conn() as conn:
+        conn.execute("DELETE FROM fund_sector_cache WHERE fund_code = ?", (c,))
 
 
 def _save_fund_profile(
