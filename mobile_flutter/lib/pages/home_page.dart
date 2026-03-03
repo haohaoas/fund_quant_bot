@@ -1179,7 +1179,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     });
 
     try {
-      final created = await widget.apiClient.createInvestment(
+      await widget.apiClient.createInvestment(
         code: draft.code,
         amount: draft.amount,
         action: draft.action,
@@ -1187,39 +1187,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         accountId: _activeAccountId,
       );
 
-      double? asDouble(dynamic value) {
-        if (value is num) {
-          return value.toDouble();
-        }
-        if (value == null) {
-          return null;
-        }
-        return double.tryParse(value.toString());
-      }
-
       if (!mounted) {
         return;
       }
 
-      final trade = (created["trade"] as Map?)?.cast<String, dynamic>() ??
-          const <String, dynamic>{};
-      final position = (created["position"] as Map?)?.cast<String, dynamic>() ??
-          const <String, dynamic>{};
-      final tradeAmount = asDouble(trade["amount"]);
-      final totalShares = asDouble(position["shares"]);
-      final totalCost = asDouble(position["cost"]);
-      final totalInvested = (totalShares != null && totalCost != null)
-          ? totalShares * totalCost
-          : null;
-
-      final message = (tradeAmount != null && totalInvested != null)
-          ? "新增成功：本次 ¥${_fmt(tradeAmount)}，累计投入 ¥${_fmt(totalInvested)}"
-          : (tradeAmount != null
-              ? "新增成功：本次投入 ¥${_fmt(tradeAmount)}"
-              : "新增持仓成功");
-
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(message)),
+        const SnackBar(content: Text("新增持仓成功")),
       );
 
       await _loadPortfolio(forceRefresh: true);
@@ -1371,15 +1344,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       return marketValue;
     }
     return marketValue - dailyProfit;
-  }
-
-  double? _investedPositionValue(PortfolioPosition position) {
-    final shares = position.shares;
-    final cost = position.cost;
-    if (shares <= 0 || cost <= 0) {
-      return null;
-    }
-    return shares * cost;
   }
 
   Widget _buildErrorCard(String? error) {
@@ -1830,7 +1794,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         children: [
           Expanded(
             flex: 5,
-            child: Text("基金/投入", style: TextStyle(color: Color(0xFF7B8599))),
+            child: Text("基金/市值", style: TextStyle(color: Color(0xFF7B8599))),
           ),
           Expanded(
             flex: 2,
@@ -1937,7 +1901,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                               Row(
                                 children: [
                                   Text(
-                                    "投入 ¥${_investedPositionValue(position) == null ? "--" : _fmt(_investedPositionValue(position)!)}",
+                                    "¥ ${_settledPositionValue(position) == null ? "--" : _fmt(_settledPositionValue(position)!)}",
                                     style: const TextStyle(
                                       color: Color(0xFF7B8599),
                                       fontSize: 14,
@@ -4110,8 +4074,6 @@ class _FundTrendPageState extends State<_FundTrendPage> {
     double minNav = 0;
     double maxNav = 0;
     final holdAmount = p.marketValue;
-    final investedAmount =
-        (p.shares > 0 && p.cost > 0) ? (p.shares * p.cost) : null;
     final holdRatio =
         (holdAmount != null && (widget.accountTotalAsset ?? 0) > 0)
             ? holdAmount / (widget.accountTotalAsset ?? 1) * 100
@@ -4256,8 +4218,7 @@ class _FundTrendPageState extends State<_FundTrendPage> {
                         mainAxisSpacing: 8,
                         crossAxisSpacing: 10,
                         children: [
-                          _gridMetric("投入金额", _fmtMoney(investedAmount)),
-                          _gridMetric("当前市值", _fmtMoney(holdAmount)),
+                          _gridMetric("持有金额", _fmtMoney(holdAmount)),
                           _gridMetric("持有份额", _fmtNum(p.shares, digits: 2)),
                           _gridMetric("持仓占比", _fmtPct(holdRatio)),
                           _gridMetric(
