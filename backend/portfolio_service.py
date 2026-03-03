@@ -1364,27 +1364,35 @@ def enrich_position(pos: Dict[str, Any], quote_source: str = "auto") -> Dict[str
     nav = _safe_float(gz.get("nav")) if gz.get("ok") else None
     prev_nav = _safe_float(gz.get("prev_nav")) if gz.get("ok") else None
 
-    daily_change_pct = _safe_float(gz.get("daily_change_pct")) if gz.get("ok") else None
-    if daily_change_pct is None and nav is not None and prev_nav is not None and prev_nav != 0:
-        daily_change_pct = (float(nav) - float(prev_nav)) / float(prev_nav) * 100.0
+    # Keep estimate metrics for intraday "当日涨幅/当日收益" display.
+    est_nav = nav
+    est_prev_nav = prev_nav
+    est_daily_change_pct = _safe_float(gz.get("daily_change_pct")) if gz.get("ok") else None
+    if est_daily_change_pct is None and est_nav is not None and est_prev_nav is not None and est_prev_nav != 0:
+        est_daily_change_pct = (float(est_nav) - float(est_prev_nav)) / float(est_prev_nav) * 100.0
 
     jzrq = str(gz.get("jzrq") or "").strip() if gz.get("ok") else ""
     nav_settled = _is_nav_settled(gz) if gz.get("ok") else False
 
-    # 持仓页口径：白天不使用估值波动，按上一日已结算净值计价。
-    # 这样“当天买入多少就是多少”，收益在晚间净值更新后再变化。
+    # 持仓页口径：白天冻结“市值/持有收益”（不随估值跳动），
+    # 但保留“当日涨幅/当日收益”的盘中估值展示。
+    daily_change_pct: Optional[float] = est_daily_change_pct
     if not nav_settled:
         if prev_nav is not None:
             nav = prev_nav
-        if nav is not None:
-            daily_change_pct = 0.0
 
     market_value = (shares * nav) if (nav is not None) else None
     holding_profit = (shares * (nav - cost)) if (nav is not None) else None
     holding_profit_pct = ((nav - cost) / cost * 100.0) if (nav is not None and cost > 0) else None
-    daily_profit = 0.0 if (not nav_settled and nav is not None) else (
-        (shares * (nav - prev_nav)) if (nav is not None and prev_nav is not None) else None
-    )
+    if not nav_settled:
+        if est_nav is not None and est_prev_nav is not None:
+            daily_profit = shares * (est_nav - est_prev_nav)
+        elif daily_change_pct is not None and nav is not None:
+            daily_profit = shares * nav * (daily_change_pct / 100.0)
+        else:
+            daily_profit = None
+    else:
+        daily_profit = (shares * (nav - prev_nav)) if (nav is not None and prev_nav is not None) else None
 
     # 若净值已结算，优先用历史净值回填真实日涨幅（避免继续显示估值涨幅）。
     if nav_settled and code:
