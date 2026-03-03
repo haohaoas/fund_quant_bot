@@ -4,7 +4,6 @@ from datetime import datetime
 import os
 import time
 from typing import Any, Dict, List, Optional
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 from backend.db import get_conn, init_db
 
@@ -12,7 +11,6 @@ init_db()
 
 _SECTOR_PCT_FALLBACK_CACHE: Dict[str, Any] = {"ts": 0.0, "data": {}}
 _SECTOR_PCT_FALLBACK_TTL_SECONDS = 120
-_ANALYZE_SIGNAL_TIMEOUT_SEC = float(os.getenv("WATCHLIST_ANALYZE_SIGNAL_TIMEOUT_SEC", "5"))
 
 
 def _norm_user_id(user_id: int) -> int:
@@ -337,6 +335,87 @@ def _match_sector_pct_from_fallback(
                 best_score = score
                 best_pct = cand_pct
     return best_pct
+
+
+def _build_signal_from_sector_info(sector_info: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Build watchlist analysis signal from sector sentiment instead of fund NAV/grid.
+    """
+    sector_name = str(sector_info.get("sector") or "").strip()
+    score = _to_float_or_none(sector_info.get("score"))
+    level = str(sector_info.get("level") or "").strip()
+    flow_pct = _to_float_or_none(
+        sector_info.get("flow_pct")
+        if sector_info.get("flow_pct") is not None
+        else sector_info.get("pct")
+    )
+
+    if not sector_name or sector_name == "未知板块":
+        return {
+            "action": "HOLD",
+            "position_hint": "KEEP",
+            "hit_level": None,
+            "price_vs_base_pct": None,
+            "reason": "暂未识别到基金对应板块，建议先观望。",
+            "grids": [],
+            "base_price": None,
+        }
+
+    reason_parts: List[str] = [f"板块「{sector_name}」"]
+    if score is not None:
+        reason_parts.append(f"情绪分 {score:.1f}")
+    if level:
+        reason_parts.append(f"级别 {level}")
+    if flow_pct is not None:
+        reason_parts.append(f"资金流涨跌 {flow_pct:.2f}%")
+    prefix = "，".join(reason_parts)
+
+    strong = False
+    weak = False
+    if score is not None:
+        if score >= 72:
+            strong = True
+        elif score <= 38:
+            weak = True
+    if flow_pct is not None:
+        if flow_pct >= 2.0:
+            strong = True
+        elif flow_pct <= -2.0:
+            weak = True
+    if ("强" in level or "偏强" in level) and "偏弱" not in level:
+        strong = True
+    if "弱" in level or "偏弱" in level:
+        weak = True
+
+    if strong and not weak:
+        return {
+            "action": "BUY",
+            "position_hint": "ADD",
+            "hit_level": None,
+            "price_vs_base_pct": None,
+            "reason": f"{prefix}，板块偏强，优先顺势低吸。",
+            "grids": [],
+            "base_price": None,
+        }
+    if weak and not strong:
+        return {
+            "action": "SELL",
+            "position_hint": "REDUCE",
+            "hit_level": None,
+            "price_vs_base_pct": None,
+            "reason": f"{prefix}，板块偏弱，优先控制仓位。",
+            "grids": [],
+            "base_price": None,
+        }
+    return {
+        "action": "HOLD",
+        "position_hint": "KEEP",
+        "hit_level": None,
+        "price_vs_base_pct": None,
+        "reason": f"{prefix}，板块信号中性，暂以持有观察为主。",
+        "grids": [],
+        "base_price": None,
+    }
 
 
 def list_watchlist(user_id: int, quote_source: str = "auto") -> List[Dict[str, Any]]:
@@ -664,10 +743,6 @@ def analyze_fund(
     except Exception:
         fetch_fund_gz = None
     try:
-        from strategy import generate_today_signal
-    except Exception:
-        generate_today_signal = None
-    try:
         from sector import get_sector_by_fund, get_sector_sentiment
     except Exception:
         get_sector_by_fund = None
@@ -727,53 +802,6 @@ def analyze_fund(
     price_f = _to_float_or_none(price)
     pct_f = _to_float_or_none(pct)
 
-    signal: Dict[str, Any]
-    if price_f is None:
-        signal = {
-            "action": "HOLD",
-            "position_hint": "KEEP",
-            "hit_level": None,
-            "price_vs_base_pct": None,
-            "reason": "暂时无法获取实时价格，建议观望",
-            "grids": [],
-            "base_price": None,
-        }
-    else:
-        if callable(generate_today_signal):
-            try:
-                pool = ThreadPoolExecutor(max_workers=1)
-                fut = pool.submit(generate_today_signal, c, price_f)
-                signal = fut.result(timeout=_ANALYZE_SIGNAL_TIMEOUT_SEC)
-            except Exception as e:
-                reason = f"策略计算失败: {type(e).__name__}"
-                if isinstance(e, FuturesTimeoutError):
-                    reason = "策略计算超时，已降级为观望建议"
-                signal = {
-                    "action": "HOLD",
-                    "position_hint": "KEEP",
-                    "hit_level": None,
-                    "price_vs_base_pct": None,
-                    "reason": reason,
-                    "grids": [],
-                    "base_price": None,
-                }
-            finally:
-                try:
-                    # Do not wait on timeout path, otherwise request can still block.
-                    pool.shutdown(wait=False, cancel_futures=True)
-                except Exception:
-                    pass
-        else:
-            signal = {
-                "action": "HOLD",
-                "position_hint": "KEEP",
-                "hit_level": None,
-                "price_vs_base_pct": None,
-                "reason": "策略模块未就绪，使用默认观望建议",
-                "grids": [],
-                "base_price": None,
-            }
-
     sector_name = ""
     if callable(get_cached_fund_sector):
         try:
@@ -808,6 +836,7 @@ def analyze_fund(
         "score": 50,
         "level": "中性",
         "comment": "暂未获取到板块情绪数据。",
+        "flow_pct": None,
     }
     # Default ON: always try to provide sector sentiment in analysis page.
     sector_live_enabled = (
@@ -824,9 +853,12 @@ def analyze_fund(
                     "score": _to_float_or_none(raw_sector_info.get("score")) or 50,
                     "level": str(raw_sector_info.get("level") or "中性"),
                     "comment": str(raw_sector_info.get("comment") or ""),
+                    "flow_pct": _to_float_or_none(raw_sector_info.get("flow_pct")),
                 }
         except Exception:
             pass
+
+    signal = _build_signal_from_sector_info(sector_info)
 
     ai_enabled = include_ai and (os.getenv("WATCHLIST_ANALYZE_USE_AI", "1").strip() == "1")
     ai: Dict[str, Any] = {
@@ -883,6 +915,7 @@ def analyze_fund(
         "sector": {
             "name": str(sector_info.get("sector") or sector_name or "未知板块"),
             "score": _to_float_or_none(sector_info.get("score")) or 50,
+            "flow_pct": _to_float_or_none(sector_info.get("flow_pct")),
             "level": str(sector_info.get("level") or "中性"),
             "comment": str(sector_info.get("comment") or ""),
         },
