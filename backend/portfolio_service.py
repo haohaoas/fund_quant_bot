@@ -795,6 +795,28 @@ def _extract_float_field_from_blob(blob: str, keys: List[str]) -> Optional[float
     return None
 
 
+def _payload_signature(payload: Any, max_items: int = 12) -> str:
+    try:
+        if isinstance(payload, dict):
+            top = [str(k) for k in list(payload.keys())[:max_items]]
+            if top:
+                return "dict:" + ",".join(top)
+        if isinstance(payload, list):
+            if not payload:
+                return "list:empty"
+            first = payload[0]
+            if isinstance(first, dict):
+                keys = [str(k) for k in list(first.keys())[:max_items]]
+                return "list[dict]:" + ",".join(keys)
+            return f"list:{type(first).__name__}"
+        text = str(payload or "").strip()
+        if not text:
+            return "empty"
+        return "text:" + text[:80].replace("\n", " ")
+    except Exception:
+        return "sig_error"
+
+
 def _build_baidu_quote_from_payload(code: str, payload: Any) -> Dict[str, Any]:
     c = _norm_code6(code)
     nav = _safe_float(
@@ -1054,18 +1076,22 @@ def _fetch_baidu_gushitong_quote(code: str) -> Dict[str, Any]:
         ("https://finance.pae.baidu.com/vapi/v1/fundquotation", {"code": c, "finClientType": "pc"}),
     ]
     for url, params in api_candidates:
+        name = url.rsplit("/", 1)[-1]
         try:
             resp = sess.get(url, params=params, headers=headers, timeout=timeout_pair, proxies={})
-            diag.append(f"api:{url.rsplit('/',1)[-1]}:{resp.status_code}")
+            diag.append(f"api:{name}:{resp.status_code}")
             if resp.status_code != 200:
                 continue
             payload = resp.json()
             out = _build_baidu_quote_from_payload(c, payload)
             if out.get("ok"):
                 return out
-            diag.append(f"api:{url.rsplit('/',1)[-1]}:parse_failed")
+            out_txt = _build_baidu_quote_from_payload(c, resp.text)
+            if out_txt.get("ok"):
+                return out_txt
+            diag.append(f"api:{name}:parse_failed:{_payload_signature(payload)}")
         except Exception as e:
-            diag.append(f"api:{url.rsplit('/',1)[-1]}:{type(e).__name__}")
+            diag.append(f"api:{name}:{type(e).__name__}")
             continue
 
     # Try generic opendata entry used by gushitong web; resource id can drift.
@@ -1124,7 +1150,7 @@ def _fetch_baidu_gushitong_quote(code: str) -> Dict[str, Any]:
             out = _build_baidu_quote_from_payload(c, payload)
             if out.get("ok"):
                 return out
-            diag.append(f"opendata:{idx}:parse_failed")
+            diag.append(f"opendata:{idx}:parse_failed:{_payload_signature(payload)}")
         except Exception as e:
             diag.append(f"opendata:{idx}:{type(e).__name__}")
             continue
@@ -1217,7 +1243,7 @@ def _fetch_baidu_gushitong_quote(code: str) -> Dict[str, Any]:
             continue
 
     _BAIDU_GS_FAIL_CACHE[c] = now
-    detail = ";".join(diag[:8]) if diag else "no_detail"
+    detail = ";".join(diag[:16]) if diag else "no_detail"
     return {"ok": False, "error": f"baidu gushitong fetch failed: {detail}"}
 
 
