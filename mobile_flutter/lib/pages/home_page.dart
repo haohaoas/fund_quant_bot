@@ -247,13 +247,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _reload({bool forceRefresh = false}) async {
-    await _loadAccounts();
-    unawaited(_loadWatchlist());
-    unawaited(_loadSectorFlow());
-    unawaited(_loadNews());
-    unawaited(_loadMajorIndices());
-    await _loadPortfolio(forceRefresh: forceRefresh);
+  Future<void> _reload({
+    bool forceRefresh = false,
+    bool showLoading = true,
+  }) async {
+    await _loadAccounts(showLoading: showLoading);
+    unawaited(_loadWatchlist(showLoading: showLoading));
+    unawaited(_loadSectorFlow(showLoading: showLoading));
+    unawaited(_loadNews(showLoading: showLoading));
+    unawaited(_loadMajorIndices(showLoading: showLoading));
+    await _loadPortfolio(
+      forceRefresh: forceRefresh,
+      showLoading: showLoading,
+    );
   }
 
   int get _activeAccountId {
@@ -1097,7 +1103,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       context,
     ).showSnackBar(
         SnackBar(content: Text("已切换：${_quoteSourceLabel(selected)}")));
-    await _reload(forceRefresh: true);
+    if (_portfolio != null) {
+      // Keep source switch interaction instant; refresh in background.
+      unawaited(_reload(forceRefresh: true, showLoading: false));
+    } else {
+      await _reload(forceRefresh: true);
+    }
   }
 
   Future<void> _openAccountInfoPage() async {
