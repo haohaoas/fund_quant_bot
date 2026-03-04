@@ -1314,6 +1314,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (marketValue == null) {
       return null;
     }
+    // Intraday mode: market value is already frozen by backend.
+    // Do not subtract estimated daily profit again, otherwise value drifts.
+    if (!position.navSettled) {
+      return marketValue;
+    }
     final dailyProfit = position.dailyProfit;
     if (dailyProfit == null) {
       return marketValue;
