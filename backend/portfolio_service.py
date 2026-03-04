@@ -829,8 +829,138 @@ def _payload_signature(payload: Any, max_items: int = 12) -> str:
         return "sig_error"
 
 
+def _extract_baidu_market_data_quote(code: str, payload: Any) -> Optional[Dict[str, Any]]:
+    c = _norm_code6(code)
+    stack: List[Any] = [payload]
+    seen = 0
+    while stack and seen < 6000:
+        node = stack.pop()
+        seen += 1
+        if isinstance(node, dict):
+            keys_obj = node.get("keys")
+            md_obj = node.get("marketData")
+            if isinstance(md_obj, str):
+                keys_list: List[str] = []
+                if isinstance(keys_obj, list):
+                    keys_list = [str(x or "").strip() for x in keys_obj if str(x or "").strip()]
+                elif isinstance(keys_obj, str):
+                    keys_list = [x.strip() for x in keys_obj.split(",") if x.strip()]
+                if keys_list:
+                    rows = [r for r in str(md_obj or "").split(";") if str(r or "").strip()]
+                    if rows:
+                        last_row = rows[-1]
+                        parts = [x.strip() for x in last_row.split(",")]
+                        kv: Dict[str, Any] = {}
+                        for i, k in enumerate(keys_list):
+                            if not k:
+                                continue
+                            kv[k] = parts[i] if i < len(parts) else ""
+                        nav_key_order = [
+                            "close",
+                            "price",
+                            "latest",
+                            "netvalue",
+                            "nav",
+                            "unitnav",
+                            "dwjz",
+                        ]
+                        prev_key_order = [
+                            "preclose",
+                            "prevclose",
+                            "previousclose",
+                            "yesterdayclose",
+                            "lastclose",
+                            "dwjz",
+                        ]
+                        pct_key_order = [
+                            "ratio",
+                            "pct",
+                            "changeratio",
+                            "changepercent",
+                            "range",
+                        ]
+
+                        def _pick_by_key(order: List[str]) -> Tuple[Optional[str], Optional[float]]:
+                            low_map = {str(k).strip().lower(): v for k, v in kv.items()}
+                            for kk in order:
+                                if kk in low_map:
+                                    return kk, _safe_float(low_map.get(kk))
+                            for k, v in low_map.items():
+                                if any(kk in k for kk in order):
+                                    vv = _safe_float(v)
+                                    if vv is not None:
+                                        return k, vv
+                            return None, None
+
+                        nav_k, nav_v = _pick_by_key(nav_key_order)
+                        prev_k, prev_v = _pick_by_key(prev_key_order)
+                        pct_k, pct_v = _pick_by_key(pct_key_order)
+                        if nav_v is not None and 0.01 <= float(nav_v) <= 100.0:
+                            pct_out = pct_v
+                            if pct_out is not None:
+                                # Some fields expose ratio (0.01 => 1%); normalize.
+                                if abs(float(pct_out)) <= 2.0 and pct_k and any(
+                                    x in str(pct_k).lower() for x in ("changeratio", "changepercent")
+                                ):
+                                    pct_out = float(pct_out) * 100.0
+                            if prev_v is None and pct_out not in (None, -100):
+                                try:
+                                    prev_v = float(nav_v) / (1.0 + float(pct_out) / 100.0)
+                                except Exception:
+                                    prev_v = None
+                            dt_label = str(kv.get("time") or kv.get("date") or "").strip()
+                            jzrq = ""
+                            if len(dt_label) >= 10:
+                                jzrq = dt_label[:10].replace("/", "-")
+                            if not jzrq:
+                                jzrq = datetime.now().strftime("%Y-%m-%d")
+                            return {
+                                "ok": True,
+                                "code": c,
+                                "name": "",
+                                "nav": float(nav_v),
+                                "prev_nav": float(prev_v) if prev_v is not None else None,
+                                "daily_change_pct": float(pct_out) if pct_out is not None else None,
+                                "jzrq": jzrq,
+                                "gztime": dt_label,
+                                "source": "baidu_gushitong_marketdata",
+                            }
+
+            for v in node.values():
+                if isinstance(v, (dict, list)):
+                    stack.append(v)
+                elif isinstance(v, str):
+                    sv = v.strip()
+                    if len(sv) >= 2 and len(sv) <= 500000 and sv[0] in "{[" and sv[-1] in "}]":
+                        try:
+                            import json as _json
+
+                            vv = _json.loads(sv)
+                            stack.append(vv)
+                        except Exception:
+                            pass
+        elif isinstance(node, list):
+            for v in node:
+                if isinstance(v, (dict, list)):
+                    stack.append(v)
+                elif isinstance(v, str):
+                    sv = v.strip()
+                    if len(sv) >= 2 and len(sv) <= 500000 and sv[0] in "{[" and sv[-1] in "}]":
+                        try:
+                            import json as _json
+
+                            vv = _json.loads(sv)
+                            stack.append(vv)
+                        except Exception:
+                            pass
+    return None
+
+
 def _build_baidu_quote_from_payload(code: str, payload: Any) -> Dict[str, Any]:
     c = _norm_code6(code)
+    name = ""
+    gztime = ""
+    jzrq = ""
     nav = _safe_float(
         _deep_pick_first(
             payload,
@@ -1119,6 +1249,17 @@ def _build_baidu_quote_from_payload(code: str, payload: Any) -> Dict[str, Any]:
             prev_nav = sorted(prev_candidates2, key=lambda x: x[0], reverse=True)[0][1]
         if pct_candidates2:
             pct = sorted(pct_candidates2, key=lambda x: x[0], reverse=True)[0][1]
+
+    if nav is None:
+        market_out = _extract_baidu_market_data_quote(c, payload)
+        if market_out and market_out.get("ok"):
+            nav = _safe_float(market_out.get("nav"))
+            prev_nav = _safe_float(market_out.get("prev_nav"))
+            pct = _safe_float(market_out.get("daily_change_pct"))
+            if not jzrq:
+                jzrq = str(market_out.get("jzrq") or "")
+            if not gztime:
+                gztime = str(market_out.get("gztime") or "")
 
     if nav is None:
         # Last fallback: semantic regex scan over serialized payload text.
