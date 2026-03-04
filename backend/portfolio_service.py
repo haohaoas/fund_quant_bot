@@ -911,6 +911,8 @@ def _fetch_baidu_gushitong_quote(code: str) -> Dict[str, Any]:
     if last_fail and (now - last_fail) <= _BAIDU_GS_FAIL_TTL_SECONDS:
         return {"ok": False, "error": "baidu recent fail cached"}
 
+    diag: List[str] = []
+
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -933,6 +935,7 @@ def _fetch_baidu_gushitong_quote(code: str) -> Dict[str, Any]:
         try:
             url = url_template.format(code=c)
             resp = sess.get(url, headers=headers, timeout=timeout_pair, proxies={})
+            diag.append(f"tpl:{resp.status_code}")
             if resp.status_code == 200:
                 try:
                     payload = resp.json()
@@ -944,8 +947,9 @@ def _fetch_baidu_gushitong_quote(code: str) -> Dict[str, Any]:
                 out = _build_baidu_quote_from_payload(c, resp.text)
                 if out.get("ok"):
                     return out
-        except Exception:
-            pass
+                diag.append("tpl:parse_failed")
+        except Exception as e:
+            diag.append(f"tpl:{type(e).__name__}")
 
     api_candidates = [
         ("https://finance.pae.baidu.com/sapi/v1/fund/quote", {"code": c, "finClientType": "pc"}),
@@ -956,13 +960,77 @@ def _fetch_baidu_gushitong_quote(code: str) -> Dict[str, Any]:
     for url, params in api_candidates:
         try:
             resp = sess.get(url, params=params, headers=headers, timeout=timeout_pair, proxies={})
+            diag.append(f"api:{url.rsplit('/',1)[-1]}:{resp.status_code}")
             if resp.status_code != 200:
                 continue
             payload = resp.json()
             out = _build_baidu_quote_from_payload(c, payload)
             if out.get("ok"):
                 return out
-        except Exception:
+            diag.append(f"api:{url.rsplit('/',1)[-1]}:parse_failed")
+        except Exception as e:
+            diag.append(f"api:{url.rsplit('/',1)[-1]}:{type(e).__name__}")
+            continue
+
+    # Try generic opendata entry used by gushitong web; resource id can drift.
+    opendata_candidates = [
+        {
+            "openapi": "1",
+            "dspName": "iphone",
+            "tn": "tangram",
+            "client": "app",
+            "query": "基金净值估值",
+            "code": c,
+            "word": c,
+            "market": "fo",
+            "finClientType": "pc",
+        },
+        {
+            "openapi": "1",
+            "dspName": "iphone",
+            "tn": "tangram",
+            "client": "app",
+            "query": "基金净值估值",
+            "code": c,
+            "word": c,
+            "resource_id": "51171",
+            "market": "fo",
+            "finClientType": "pc",
+        },
+        {
+            "openapi": "1",
+            "dspName": "iphone",
+            "tn": "tangram",
+            "client": "app",
+            "query": "基金",
+            "code": c,
+            "word": c,
+            "market": "fo",
+            "finClientType": "pc",
+        },
+    ]
+    for idx, params in enumerate(opendata_candidates):
+        try:
+            resp = sess.get(
+                "https://gushitong.baidu.com/opendata",
+                params=params,
+                headers=headers,
+                timeout=timeout_pair,
+                proxies={},
+            )
+            diag.append(f"opendata:{idx}:{resp.status_code}")
+            if resp.status_code != 200:
+                continue
+            try:
+                payload = resp.json()
+            except Exception:
+                payload = resp.text
+            out = _build_baidu_quote_from_payload(c, payload)
+            if out.get("ok"):
+                return out
+            diag.append(f"opendata:{idx}:parse_failed")
+        except Exception as e:
+            diag.append(f"opendata:{idx}:{type(e).__name__}")
             continue
 
     html_urls = [
@@ -980,10 +1048,12 @@ def _fetch_baidu_gushitong_quote(code: str) -> Dict[str, Any]:
                 timeout=timeout_pair,
                 proxies={},
             )
+            diag.append(f"html:{url.rsplit('/',1)[-1]}:{resp.status_code}")
             if resp.status_code != 200:
                 continue
             txt = str(resp.text or "")
             if not txt:
+                diag.append(f"html:{url.rsplit('/',1)[-1]}:empty")
                 continue
             nav = _extract_float_field_from_blob(
                 txt,
@@ -999,6 +1069,7 @@ def _fetch_baidu_gushitong_quote(code: str) -> Dict[str, Any]:
                 ],
             )
             if nav is None:
+                diag.append(f"html:{url.rsplit('/',1)[-1]}:no_nav")
                 continue
             prev_nav = _extract_float_field_from_blob(
                 txt,
@@ -1045,11 +1116,13 @@ def _fetch_baidu_gushitong_quote(code: str) -> Dict[str, Any]:
                 "gztime": gztime,
                 "source": "baidu_gushitong",
             }
-        except Exception:
+        except Exception as e:
+            diag.append(f"html:{url.rsplit('/',1)[-1]}:{type(e).__name__}")
             continue
 
     _BAIDU_GS_FAIL_CACHE[c] = now
-    return {"ok": False, "error": "baidu gushitong fetch failed"}
+    detail = ";".join(diag[:8]) if diag else "no_detail"
+    return {"ok": False, "error": f"baidu gushitong fetch failed: {detail}"}
 
 
 def fetch_fund_intraday_trend(
