@@ -7,6 +7,7 @@ import "pages/home_page.dart";
 import "services/api_client.dart";
 
 const _authTokenKey = "auth_token";
+const _networkNoticeShownKey = "network_notice_shown_v1";
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -30,6 +31,42 @@ class _FundQuantMobileAppState extends State<FundQuantMobileApp> {
     super.initState();
     _apiClient = ApiClient(baseUrl: AppConfig.apiBaseUrl);
     _restoreSession();
+    _showNetworkNoticeIfNeeded();
+  }
+
+  Future<void> _showNetworkNoticeIfNeeded() async {
+    final prefs = await SharedPreferences.getInstance();
+    final shown = prefs.getBool(_networkNoticeShownKey) ?? false;
+    if (shown || !mounted) {
+      return;
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) {
+        return;
+      }
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) {
+          return AlertDialog(
+            title: const Text("网络访问提示"),
+            content: const Text(
+              "应用需要网络连接以完成登录、获取行情和同步数据。请确认允许应用联网。",
+            ),
+            actions: [
+              FilledButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text("同意并继续"),
+              ),
+            ],
+          );
+        },
+      );
+
+      final latestPrefs = await SharedPreferences.getInstance();
+      await latestPrefs.setBool(_networkNoticeShownKey, true);
+    });
   }
 
   Future<void> _restoreSession() async {
