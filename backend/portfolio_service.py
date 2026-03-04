@@ -13,9 +13,10 @@
   夜间优先切换到真实净值快照（akshare 开放式基金净值）并带多级兜底。
 """
 
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Set, Tuple
 from datetime import datetime, timedelta
 import os
+import random
 import time
 import sqlite3
 import re
@@ -48,6 +49,7 @@ init_db()
 # Example: https://fundgz.1234567.com.cn/js/015790.js -> jsonpgz({...});
 
 _FUNDGZ_TTL_SECONDS = 30
+_FUNDGZ_SETTLED_TTL_SECONDS = int(os.getenv("FUNDGZ_SETTLED_TTL_SECONDS", "180"))
 _FUNDGZ_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _FUNDGZ_CACHE_MAX = int(os.getenv("FUNDGZ_CACHE_MAX", "300"))
 _FUNDGZ_CONNECT_TIMEOUT_SECONDS = 0.4
@@ -78,6 +80,16 @@ _FUND123_STATE: Dict[str, Any] = {"ts": 0.0, "csrf": "", "session": None}
 _FUND123_KEY_CACHE: Dict[str, Tuple[float, str, str]] = {}
 _FUND123_FAIL_CACHE: Dict[str, float] = {}
 _FUND123_TREND_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_SETTLED_BG_REFRESH_LOCK = threading.Lock()
+_SETTLED_BG_REFRESH_INFLIGHT: Set[str] = set()
+_AK_RETRY_MAX_ATTEMPTS = int(os.getenv("AK_RETRY_MAX_ATTEMPTS", "2"))
+_AK_RETRY_MIN_DELAY_SECONDS = float(os.getenv("AK_RETRY_MIN_DELAY_SECONDS", "0.6"))
+_AK_RETRY_MAX_DELAY_SECONDS = float(os.getenv("AK_RETRY_MAX_DELAY_SECONDS", "1.6"))
+_AK_MIN_INTERVAL_SECONDS = float(os.getenv("AK_MIN_INTERVAL_SECONDS", "0.0"))
+_AK_CALL_TIMEOUT_SECONDS = float(os.getenv("AK_CALL_TIMEOUT_SECONDS", "8.0"))
+_SETTLED_HISTORY_TIMEOUT_SECONDS = float(os.getenv("SETTLED_HISTORY_TIMEOUT_SECONDS", "2.5"))
+_AK_CALL_LOCK = threading.Lock()
+_AK_LAST_CALL_TS: Dict[str, float] = {}
 
 
 def _trim_timed_cache(cache: Dict[str, Any], max_size: int) -> None:
@@ -162,6 +174,94 @@ def _norm_code6(code: str) -> str:
     return str(code or "").strip()
 
 
+def _should_retry_network_error(err: Exception) -> bool:
+    text = str(err or "").lower()
+    markers = (
+        "remotedisconnected",
+        "connection aborted",
+        "connection reset",
+        "max retries exceeded",
+        "temporarily unavailable",
+        "timed out",
+        "incompleteread",
+        "name resolution",
+        "nodename nor servname",
+        "econnreset",
+    )
+    return any(m in text for m in markers)
+
+
+def _throttle_ak_call(key: str) -> None:
+    min_interval = max(0.0, float(_AK_MIN_INTERVAL_SECONDS))
+    if min_interval <= 0:
+        return
+    now = time.time()
+    with _AK_CALL_LOCK:
+        last = float(_AK_LAST_CALL_TS.get(key) or 0.0)
+    wait = min_interval - (now - last)
+    if wait > 0:
+        time.sleep(wait)
+    with _AK_CALL_LOCK:
+        _AK_LAST_CALL_TS[key] = time.time()
+
+
+def _ak_call_with_retry(call_key: str, fn):
+    attempts = max(1, int(_AK_RETRY_MAX_ATTEMPTS))
+    low = max(0.0, float(_AK_RETRY_MIN_DELAY_SECONDS))
+    high = max(low, float(_AK_RETRY_MAX_DELAY_SECONDS))
+    last_err: Optional[Exception] = None
+    for i in range(1, attempts + 1):
+        try:
+            _throttle_ak_call(call_key)
+            pool = ThreadPoolExecutor(max_workers=1)
+            try:
+                fut = pool.submit(fn)
+                return fut.result(timeout=max(0.5, float(_AK_CALL_TIMEOUT_SECONDS)))
+            finally:
+                try:
+                    pool.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
+        except Exception as e:
+            last_err = e
+            if i >= attempts or not _should_retry_network_error(e):
+                raise
+            time.sleep(random.uniform(low, high))
+    if last_err is not None:
+        raise last_err
+    raise RuntimeError("ak call failed without exception")
+
+
+def _refresh_settled_quote_async(code: str) -> None:
+    raw = str(code or "").strip()
+    c = _norm_code6(raw)
+    if not raw and not c:
+        return
+    inflight_key = c or raw
+    with _SETTLED_BG_REFRESH_LOCK:
+        if inflight_key in _SETTLED_BG_REFRESH_INFLIGHT:
+            return
+        _SETTLED_BG_REFRESH_INFLIGHT.add(inflight_key)
+
+    def _worker() -> None:
+        try:
+            q_code = c or raw
+            out = _fallback_quote_from_settled_nav(q_code)
+            if out.get("ok"):
+                ts = time.time()
+                _FUNDGZ_CACHE[f"{raw}|settled"] = (ts, out)
+                if c and c != raw:
+                    _FUNDGZ_CACHE[f"{c}|settled"] = (ts, out)
+        except Exception:
+            pass
+        finally:
+            with _SETTLED_BG_REFRESH_LOCK:
+                _SETTLED_BG_REFRESH_INFLIGHT.discard(inflight_key)
+
+    t = threading.Thread(target=_worker, name=f"settled-refresh-{c}", daemon=True)
+    t.start()
+
+
 def _pick_col_contains(df: Any, keys: List[str]) -> Optional[str]:
     cols_obj = getattr(df, "columns", None)
     cols = list(cols_obj) if cols_obj is not None else []
@@ -204,6 +304,63 @@ def _parse_jsonp_obj(text: str) -> Dict[str, Any]:
         return json.loads(s)
     except Exception:
         return {}
+
+
+def _quick_estimate_quote_from_fundgz(code: str) -> Dict[str, Any]:
+    c = str(code or "").strip()
+    if not c:
+        return {"ok": False, "error": "empty code"}
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/121.0.0.0 Safari/537.36"
+        ),
+        "Accept": "*/*",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+        "Referer": "https://fund.eastmoney.com/",
+        "Connection": "close",
+    }
+    url = f"https://fundgz.1234567.com.cn/js/{c}.js"
+    sess = requests.Session()
+    try:
+        sess.trust_env = False
+    except Exception:
+        pass
+    try:
+        resp = sess.get(
+            url,
+            headers=headers,
+            timeout=(
+                _FUNDGZ_CONNECT_TIMEOUT_SECONDS,
+                _FUNDGZ_READ_TIMEOUT_SECONDS,
+            ),
+            proxies={},
+        )
+        if resp.status_code != 200:
+            return {"ok": False, "error": f"HTTP {resp.status_code}"}
+        resp.encoding = "utf-8"
+        obj = _parse_jsonp_obj(resp.text)
+        if not obj:
+            return {"ok": False, "error": "empty json"}
+        nav = _safe_float(obj.get("gsz"))
+        if nav is None:
+            nav = _safe_float(obj.get("dwjz"))
+        prev_nav = _safe_float(obj.get("dwjz"))
+        out = {
+            "ok": True,
+            "code": c,
+            "name": str(obj.get("name") or "").strip(),
+            "nav": nav,
+            "prev_nav": prev_nav,
+            "daily_change_pct": _safe_float(obj.get("gszzl")),
+            "jzrq": str(obj.get("jzrq") or "").strip(),
+            "gztime": str(obj.get("gztime") or "").strip(),
+            "source": "fundgz_estimate_quick",
+        }
+        return out
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
 def _pick_first_nonempty(row: Dict[str, Any], keys: List[str]) -> Any:
@@ -593,6 +750,42 @@ def fetch_fund_intraday_trend(
     if cached and (now - cached[0]) <= _FUND123_TREND_TTL_SECONDS:
         return cached[1]
 
+    if mode == "settled":
+        latest = fetch_fund_gz(c, source_mode="settled")
+        nav = _safe_float((latest or {}).get("nav"))
+        pct = _safe_float((latest or {}).get("daily_change_pct"))
+        if nav is not None:
+            t = str((latest or {}).get("jzrq") or (latest or {}).get("gztime") or "").strip()
+            points = [
+                {
+                    "time": t if t else datetime.now().strftime("%H:%M"),
+                    "nav": round(float(nav), 6),
+                    "pct": round(float(pct), 2) if pct is not None else None,
+                    "ts": int(time.time() * 1000),
+                }
+            ]
+            out = {
+                "ok": True,
+                "code": c,
+                "name": str((latest or {}).get("name") or "").strip(),
+                "source": str((latest or {}).get("source") or "settled"),
+                "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "points": points,
+            }
+            _FUND123_TREND_CACHE[cache_key] = (now, out)
+            return out
+        out = {
+            "ok": False,
+            "error": str((latest or {}).get("error") or "settled quote unavailable"),
+            "code": c,
+            "name": str((latest or {}).get("name") or "").strip(),
+            "source": "settled",
+            "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "points": [],
+        }
+        _FUND123_TREND_CACHE[cache_key] = (now, out)
+        return out
+
     meta = _fund123_search_meta(c)
     product_key = str(meta.get("key") or "").strip()
     if not product_key:
@@ -838,9 +1031,27 @@ def _fetch_settled_nav_snapshot(code: str, jzrq: str) -> Dict[str, Any]:
 
     # 2) Fallback to history series (stable but less timely).
     try:
-        from data import get_fund_history  # 延迟导入，避免启动时重依赖
+        def _load_history_df():
+            from data import get_fund_history  # 延迟导入，避免启动时重依赖
 
-        df = get_fund_history(c, lookback_days=120)
+            return get_fund_history(c, lookback_days=120)
+
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
+            fut = pool.submit(_load_history_df)
+            df = fut.result(timeout=max(0.5, float(_SETTLED_HISTORY_TIMEOUT_SECONDS)))
+        except FuturesTimeoutError:
+            try:
+                fut.cancel()
+            except Exception:
+                pass
+            df = None
+        finally:
+            try:
+                pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+
         if df is None or getattr(df, "empty", True):
             _SETTLED_NAV_CACHE[key] = (now, out)
             return out
@@ -914,16 +1125,17 @@ def _fetch_open_fund_daily_snapshot(code: str) -> Dict[str, Any]:
     now = time.time()
     cache_ts = float(_OPEN_FUND_DAILY_CACHE.get("ts") or 0.0)
     data_map = _OPEN_FUND_DAILY_CACHE.get("data") or {}
-    if isinstance(data_map, dict) and (now - cache_ts) <= _OPEN_FUND_DAILY_TTL_SECONDS:
-        return dict(data_map.get(c) or {})
+    old_map: Dict[str, Dict[str, Any]] = data_map if isinstance(data_map, dict) else {}
+    if old_map and (now - cache_ts) <= _OPEN_FUND_DAILY_TTL_SECONDS:
+        return dict(old_map.get(c) or {})
 
     latest_map: Dict[str, Dict[str, Any]] = {}
     try:
         import akshare as ak  # type: ignore
     except Exception:
         _OPEN_FUND_DAILY_CACHE["ts"] = now
-        _OPEN_FUND_DAILY_CACHE["data"] = latest_map
-        return {}
+        _OPEN_FUND_DAILY_CACHE["data"] = old_map
+        return dict(old_map.get(c) or {})
 
     try:
         from backend.services.sector_flow_service import akshare_no_proxy
@@ -934,25 +1146,28 @@ def _fetch_open_fund_daily_snapshot(code: str) -> Dict[str, Any]:
         fn = getattr(ak, "fund_open_fund_daily_em", None)
         if not callable(fn):
             _OPEN_FUND_DAILY_CACHE["ts"] = now
-            _OPEN_FUND_DAILY_CACHE["data"] = latest_map
-            return {}
-        if callable(akshare_no_proxy):
-            with akshare_no_proxy():
-                df = fn()
-        else:
-            df = fn()
+            _OPEN_FUND_DAILY_CACHE["data"] = old_map
+            return dict(old_map.get(c) or {})
+
+        def _call():
+            if callable(akshare_no_proxy):
+                with akshare_no_proxy():
+                    return fn()
+            return fn()
+
+        df = _ak_call_with_retry("ak:fund_open_fund_daily_em", _call)
     except Exception:
         df = None
 
     try:
         if df is None or getattr(df, "empty", True):
             _OPEN_FUND_DAILY_CACHE["ts"] = now
-            _OPEN_FUND_DAILY_CACHE["data"] = latest_map
-            return {}
+            _OPEN_FUND_DAILY_CACHE["data"] = old_map
+            return dict(old_map.get(c) or {})
     except Exception:
         _OPEN_FUND_DAILY_CACHE["ts"] = now
-        _OPEN_FUND_DAILY_CACHE["data"] = latest_map
-        return {}
+        _OPEN_FUND_DAILY_CACHE["data"] = old_map
+        return dict(old_map.get(c) or {})
 
     code_col = _pick_col_contains(df, ["基金代码", "代码"])
     name_col = _pick_col_contains(df, ["基金简称", "基金名称", "名称"])
@@ -962,8 +1177,8 @@ def _fetch_open_fund_daily_snapshot(code: str) -> Dict[str, Any]:
 
     if not code_col or not nav_col:
         _OPEN_FUND_DAILY_CACHE["ts"] = now
-        _OPEN_FUND_DAILY_CACHE["data"] = latest_map
-        return {}
+        _OPEN_FUND_DAILY_CACHE["data"] = old_map
+        return dict(old_map.get(c) or {})
 
     try:
         for _, row in df.iterrows():
@@ -999,9 +1214,10 @@ def _fetch_open_fund_daily_snapshot(code: str) -> Dict[str, Any]:
     except Exception:
         latest_map = {}
 
+    final_map = latest_map if latest_map else old_map
     _OPEN_FUND_DAILY_CACHE["ts"] = now
-    _OPEN_FUND_DAILY_CACHE["data"] = latest_map
-    return dict(latest_map.get(c) or {})
+    _OPEN_FUND_DAILY_CACHE["data"] = final_map
+    return dict(final_map.get(c) or {})
 
 
 def _fallback_quote_from_settled_nav(code: str) -> Dict[str, Any]:
@@ -1120,8 +1336,9 @@ def _fetch_etf_spot_snapshot(code: str) -> Dict[str, Any]:
     now = time.time()
     cache_ts = float(_ETF_SPOT_CACHE.get("ts") or 0.0)
     data_map = _ETF_SPOT_CACHE.get("data") or {}
-    if isinstance(data_map, dict) and (now - cache_ts) <= _ETF_SPOT_TTL_SECONDS:
-        return dict(data_map.get(c) or {})
+    old_map: Dict[str, Dict[str, Any]] = data_map if isinstance(data_map, dict) else {}
+    if old_map and (now - cache_ts) <= _ETF_SPOT_TTL_SECONDS:
+        return dict(old_map.get(c) or {})
 
     merged: Dict[str, Dict[str, Any]] = {}
 
@@ -1129,8 +1346,8 @@ def _fetch_etf_spot_snapshot(code: str) -> Dict[str, Any]:
         import akshare as ak  # type: ignore
     except Exception:
         _ETF_SPOT_CACHE["ts"] = now
-        _ETF_SPOT_CACHE["data"] = merged
-        return {}
+        _ETF_SPOT_CACHE["data"] = old_map
+        return dict(old_map.get(c) or {})
 
     try:
         from backend.services.sector_flow_service import akshare_no_proxy
@@ -1142,10 +1359,13 @@ def _fetch_etf_spot_snapshot(code: str) -> Dict[str, Any]:
         if not callable(fn):
             return None
         try:
-            if callable(akshare_no_proxy):
-                with akshare_no_proxy():
-                    return fn()
-            return fn()
+            def _call():
+                if callable(akshare_no_proxy):
+                    with akshare_no_proxy():
+                        return fn()
+                return fn()
+
+            return _ak_call_with_retry(f"ak:{fn_name}", _call)
         except Exception:
             return None
 
@@ -1166,9 +1386,10 @@ def _fetch_etf_spot_snapshot(code: str) -> Dict[str, Any]:
     except Exception:
         pass
 
+    final_map = merged if merged else old_map
     _ETF_SPOT_CACHE["ts"] = now
-    _ETF_SPOT_CACHE["data"] = merged
-    return dict(merged.get(c) or {})
+    _ETF_SPOT_CACHE["data"] = final_map
+    return dict(final_map.get(c) or {})
 
 
 def fetch_fund_gz(code: str, source_mode: str = "auto") -> Dict[str, Any]:
@@ -1182,14 +1403,32 @@ def fetch_fund_gz(code: str, source_mode: str = "auto") -> Dict[str, Any]:
     now = time.time()
     cache_key = f"{c}|{mode}"
     cached = _FUNDGZ_CACHE.get(cache_key)
-    if cached and (now - cached[0]) <= _FUNDGZ_TTL_SECONDS:
+    cache_ttl = _FUNDGZ_SETTLED_TTL_SECONDS if mode == "settled" else _FUNDGZ_TTL_SECONDS
+    if cached and (now - cached[0]) <= cache_ttl:
         return cached[1]
 
     if mode == "settled":
-        settled = _fallback_quote_from_settled_nav(c)
-        if settled.get("ok"):
-            _FUNDGZ_CACHE[cache_key] = (now, settled)
-            return settled
+        if cached and isinstance(cached[1], dict) and cached[1].get("ok"):
+            # stale-while-revalidate: return last good settled quote immediately
+            # and refresh in background to avoid blocking holdings refresh.
+            _refresh_settled_quote_async(c)
+            return cached[1]
+        # No settled cache yet: trigger async warmup and return quickly.
+        _refresh_settled_quote_async(c)
+        estimate_cached = _FUNDGZ_CACHE.get(f"{c}|estimate")
+        if estimate_cached and isinstance(estimate_cached[1], dict) and estimate_cached[1].get("ok"):
+            quick = dict(estimate_cached[1])
+            src = str(quick.get("source") or "fundgz").strip()
+            quick["source"] = f"{src}_warmup"
+            return quick
+        quick_est = _quick_estimate_quote_from_fundgz(c)
+        if quick_est.get("ok"):
+            _FUNDGZ_CACHE[f"{c}|estimate"] = (now, quick_est)
+            src = str(quick_est.get("source") or "fundgz").strip()
+            quick = dict(quick_est)
+            quick["source"] = f"{src}_warmup"
+            return quick
+        return {"ok": False, "error": "settled quote warming up"}
     elif mode == "fund123":
         f123 = _fetch_fund123_quote(c)
         if f123.get("ok"):
@@ -1421,11 +1660,11 @@ def enrich_position(pos: Dict[str, Any], quote_source: str = "auto") -> Dict[str
     cost = _safe_float(pos.get("cost")) or 0.0
     source_mode = _norm_quote_source_mode(quote_source)
     # Fast quote modes should avoid heavy settled/sector backfill on each refresh.
-    fast_mode = source_mode in {"estimate", "fund123"}
+    fast_mode = source_mode in {"estimate", "fund123", "settled"}
 
     gz = fetch_fund_gz(code, source_mode=source_mode) if code else {"ok": False}
     name = str(gz.get("name") or "").strip() if gz.get("ok") else ""
-    if not name and code:
+    if not name and code and not fast_mode:
         # settled-only path may return empty name for some funds; fallback by code map.
         try:
             from data import get_fund_name
@@ -1433,6 +1672,8 @@ def enrich_position(pos: Dict[str, Any], quote_source: str = "auto") -> Dict[str
             name = str(get_fund_name(code) or "").strip()
         except Exception:
             name = ""
+    if not name and code and fast_mode:
+        name = code
 
     nav = _safe_float(gz.get("nav")) if gz.get("ok") else None
     prev_nav = _safe_float(gz.get("prev_nav")) if gz.get("ok") else None
