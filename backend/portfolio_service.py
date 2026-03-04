@@ -49,10 +49,12 @@ init_db()
 
 _FUNDGZ_TTL_SECONDS = 30
 _FUNDGZ_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_FUNDGZ_CACHE_MAX = int(os.getenv("FUNDGZ_CACHE_MAX", "300"))
 _FUNDGZ_CONNECT_TIMEOUT_SECONDS = 0.4
 _FUNDGZ_READ_TIMEOUT_SECONDS = 0.8
 _SETTLED_NAV_TTL_SECONDS = 900
 _SETTLED_NAV_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_SETTLED_NAV_CACHE_MAX = int(os.getenv("SETTLED_NAV_CACHE_MAX", "500"))
 _OPEN_FUND_DAILY_TTL_SECONDS = 600
 _OPEN_FUND_DAILY_CACHE: Dict[str, Any] = {"ts": 0.0, "data": {}}
 _ETF_SPOT_TTL_SECONDS = 120
@@ -60,17 +62,60 @@ _ETF_SPOT_CACHE: Dict[str, Any] = {"ts": 0.0, "data": {}}
 DEFAULT_ACCOUNT_ID = 1
 _QUOTE_SOURCE_MODES = {"auto", "estimate", "settled", "fund123"}
 _PORTFOLIO_ENRICH_TIMEOUT_SECONDS = 8.0
+_PORTFOLIO_ENRICH_MAX_WORKERS = int(os.getenv("PORTFOLIO_ENRICH_MAX_WORKERS", "3"))
 _FUND123_CONNECT_TIMEOUT_SECONDS = float(os.getenv("FUND123_CONNECT_TIMEOUT_SECONDS", "0.8"))
 _FUND123_READ_TIMEOUT_SECONDS = float(os.getenv("FUND123_READ_TIMEOUT_SECONDS", "1.5"))
 _FUND123_BOOTSTRAP_TTL_SECONDS = float(os.getenv("FUND123_BOOTSTRAP_TTL_SECONDS", "1200"))
 _FUND123_KEY_TTL_SECONDS = float(os.getenv("FUND123_KEY_TTL_SECONDS", "86400"))
 _FUND123_FAIL_TTL_SECONDS = float(os.getenv("FUND123_FAIL_TTL_SECONDS", "45"))
 _FUND123_TREND_TTL_SECONDS = float(os.getenv("FUND123_TREND_TTL_SECONDS", "20"))
+_FUND123_KEY_CACHE_MAX = int(os.getenv("FUND123_KEY_CACHE_MAX", "300"))
+_FUND123_FAIL_CACHE_MAX = int(os.getenv("FUND123_FAIL_CACHE_MAX", "300"))
+_FUND123_TREND_CACHE_MAX = int(os.getenv("FUND123_TREND_CACHE_MAX", "300"))
 _FUND123_STATE_LOCK = threading.Lock()
 _FUND123_STATE: Dict[str, Any] = {"ts": 0.0, "csrf": "", "session": None}
 _FUND123_KEY_CACHE: Dict[str, Tuple[float, str, str]] = {}
 _FUND123_FAIL_CACHE: Dict[str, float] = {}
 _FUND123_TREND_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+
+
+def _trim_timed_cache(cache: Dict[str, Any], max_size: int) -> None:
+    if max_size <= 0:
+        return
+    overflow = len(cache) - int(max_size)
+    if overflow <= 0:
+        return
+    try:
+        # cache value shape is usually (ts, payload)
+        oldest = sorted(
+            cache.items(),
+            key=lambda kv: float(kv[1][0]) if isinstance(kv[1], tuple) else 0.0,
+        )[:overflow]
+        for k, _ in oldest:
+            cache.pop(k, None)
+    except Exception:
+        # Fallback: evict arbitrary keys when timestamp extraction fails.
+        for k in list(cache.keys())[:overflow]:
+            cache.pop(k, None)
+
+
+def _trim_ts_cache(cache: Dict[str, float], max_size: int) -> None:
+    if max_size <= 0:
+        return
+    overflow = len(cache) - int(max_size)
+    if overflow <= 0:
+        return
+    oldest = sorted(cache.items(), key=lambda kv: float(kv[1]))[:overflow]
+    for k, _ in oldest:
+        cache.pop(k, None)
+
+
+def _trim_runtime_caches() -> None:
+    _trim_timed_cache(_FUNDGZ_CACHE, _FUNDGZ_CACHE_MAX)
+    _trim_timed_cache(_SETTLED_NAV_CACHE, _SETTLED_NAV_CACHE_MAX)
+    _trim_timed_cache(_FUND123_KEY_CACHE, _FUND123_KEY_CACHE_MAX)
+    _trim_ts_cache(_FUND123_FAIL_CACHE, _FUND123_FAIL_CACHE_MAX)
+    _trim_timed_cache(_FUND123_TREND_CACHE, _FUND123_TREND_CACHE_MAX)
 
 
 def clear_fund_gz_cache(code: Optional[str] = None) -> None:
@@ -533,6 +578,7 @@ def fetch_fund_intraday_trend(
     c = _norm_code6(code)
     if not c:
         return {"ok": False, "error": "empty code", "points": []}
+    _trim_runtime_caches()
     mode = _norm_quote_source_mode(source_mode)
     try:
         limit = int(max_points)
@@ -1123,6 +1169,7 @@ def fetch_fund_gz(code: str, source_mode: str = "auto") -> Dict[str, Any]:
     c = str(code).strip()
     if not c:
         return {"ok": False, "error": "empty code"}
+    _trim_runtime_caches()
     mode = _norm_quote_source_mode(source_mode)
 
     now = time.time()
@@ -1710,7 +1757,10 @@ def list_positions(account_id: Optional[int] = None, quote_source: str = "auto")
 
     # Quote enrichment is network-bound; run in parallel to avoid serial timeout
     # accumulation when portfolio contains many funds.
-    worker_count = min(6, max(1, len(rows)))
+    worker_count = min(
+        max(1, int(_PORTFOLIO_ENRICH_MAX_WORKERS)),
+        max(1, len(rows)),
+    )
     if worker_count <= 1:
         return [enrich_position(dict(r), quote_source=quote_source) for r in rows]
 

@@ -508,6 +508,28 @@ def _fetch_sector_fund_flow_ths(indicator: str, sector_type: str, top_n: int) ->
 # -----------------------
 _SECTOR_CACHE: Dict[str, Dict[str, Any]] = {}
 _CACHE_LOCK = Lock()
+_SECTOR_CACHE_MAX_KEYS = int(os.getenv("SECTOR_CACHE_MAX_KEYS", "40"))
+
+
+def _sector_cache_set(ck: str, fetched_at: str, items: List[Dict[str, Any]], debug_columns: List[str]) -> None:
+    with _CACHE_LOCK:
+        _SECTOR_CACHE[ck] = {
+            "fetched_at": fetched_at,
+            "items": items,
+            "debug_columns": debug_columns,
+        }
+        max_keys = max(1, int(_SECTOR_CACHE_MAX_KEYS))
+        overflow = len(_SECTOR_CACHE) - max_keys
+        if overflow <= 0:
+            return
+        # Evict oldest cache entries first.
+        oldest = sorted(
+            _SECTOR_CACHE.items(),
+            key=lambda kv: _seconds_since((kv[1] or {}).get("fetched_at", "")),
+            reverse=True,
+        )[:overflow]
+        for k, _ in oldest:
+            _SECTOR_CACHE.pop(k, None)
 
 
 def _normalize_provider(provider: str) -> str:
@@ -572,8 +594,7 @@ def sector_fund_flow_core(
         if ts_res.get("ok"):
             fetched_at = _now_str()
             items = ts_res.get("items", [])
-            with _CACHE_LOCK:
-                _SECTOR_CACHE[ck] = {"fetched_at": fetched_at, "items": items, "debug_columns": ts_res.get("debug_columns", [])}
+            _sector_cache_set(ck, fetched_at, items, ts_res.get("debug_columns", []))
             return {
                 "ok": True,
                 "generated_at": _now_str(),
@@ -596,8 +617,7 @@ def sector_fund_flow_core(
         if ths_res.get("ok"):
             fetched_at = _now_str()
             items = ths_res.get("items", [])
-            with _CACHE_LOCK:
-                _SECTOR_CACHE[ck] = {"fetched_at": fetched_at, "items": items, "debug_columns": ths_res.get("debug_columns", [])}
+            _sector_cache_set(ck, fetched_at, items, ths_res.get("debug_columns", []))
             return {
                 "ok": True,
                 "generated_at": _now_str(),
@@ -671,8 +691,7 @@ def sector_fund_flow_core(
             if ths_res.get("ok"):
                 fetched_at = _now_str()
                 items = ths_res.get("items", [])
-                with _CACHE_LOCK:
-                    _SECTOR_CACHE[ck] = {"fetched_at": fetched_at, "items": items, "debug_columns": ths_res.get("debug_columns", [])}
+                _sector_cache_set(ck, fetched_at, items, ths_res.get("debug_columns", []))
                 return {
                     "ok": True,
                     "generated_at": _now_str(),
@@ -770,8 +789,7 @@ def sector_fund_flow_core(
         )
 
     fetched_at = _now_str()
-    with _CACHE_LOCK:
-        _SECTOR_CACHE[ck] = {"fetched_at": fetched_at, "items": items, "debug_columns": cols}
+    _sector_cache_set(ck, fetched_at, items, cols)
 
     return {
         "ok": True,
