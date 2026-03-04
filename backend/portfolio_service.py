@@ -1401,11 +1401,41 @@ def fetch_fund_gz(code: str, source_mode: str = "auto") -> Dict[str, Any]:
     mode = _norm_quote_source_mode(source_mode)
 
     now = time.time()
+    now_dt = datetime.now()
     cache_key = f"{c}|{mode}"
     cached = _FUNDGZ_CACHE.get(cache_key)
     cache_ttl = _FUNDGZ_SETTLED_TTL_SECONDS if mode == "settled" else _FUNDGZ_TTL_SECONDS
-    if cached and (now - cached[0]) <= cache_ttl:
+    settled_prefers_estimate_intraday = (
+        mode == "settled"
+        and now_dt.weekday() < 5
+        and now_dt.hour < _SETTLED_SWITCH_HOUR
+    )
+
+    # For settled mode in workday daytime, prefer intraday estimate instead of
+    # previous-day settled snapshot.
+    if not settled_prefers_estimate_intraday and cached and (now - cached[0]) <= cache_ttl:
         return cached[1]
+
+    if settled_prefers_estimate_intraday:
+        estimate_cached = _FUNDGZ_CACHE.get(f"{c}|estimate")
+        if (
+            estimate_cached
+            and isinstance(estimate_cached[1], dict)
+            and estimate_cached[1].get("ok")
+            and (now - estimate_cached[0]) <= _FUNDGZ_TTL_SECONDS
+        ):
+            quick = dict(estimate_cached[1])
+            src = str(quick.get("source") or "fundgz").strip()
+            quick["source"] = f"{src}_via_settled"
+            return quick
+        quick_est = _quick_estimate_quote_from_fundgz(c)
+        if quick_est.get("ok"):
+            _FUNDGZ_CACHE[f"{c}|estimate"] = (now, quick_est)
+            quick = dict(quick_est)
+            src = str(quick.get("source") or "fundgz").strip()
+            quick["source"] = f"{src}_via_settled"
+            return quick
+        # If estimate source failed, continue to settled fallback chain below.
 
     if mode == "settled":
         if cached and isinstance(cached[1], dict) and cached[1].get("ok"):
