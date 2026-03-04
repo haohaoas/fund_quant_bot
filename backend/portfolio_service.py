@@ -1435,7 +1435,7 @@ def _fetch_baidu_gushitong_quote(code: str) -> Dict[str, Any]:
         ),
         "Accept": "application/vnd.finance-web.v1+json,application/json,text/plain,*/*",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        "Referer": f"https://gushitong.baidu.com/fund/fo-{c}",
+        "Referer": f"https://gushitong.baidu.com/fund/ab-{c}",
         "Origin": "https://gushitong.baidu.com",
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
@@ -1477,12 +1477,15 @@ def _fetch_baidu_gushitong_quote(code: str) -> Dict[str, Any]:
 
     code_variants = [
         c,
+        f"ab-{c}",
+        f"ab{c}",
         f"fo-{c}",
         f"fo{c}",
         f"{c}.OF",
     ]
     base_param_variants = [
         {"finClientType": "pc"},
+        {"finClientType": "pc", "market": "ab"},
         {"finClientType": "pc", "market": "fo"},
     ]
     api_defs = [
@@ -1580,6 +1583,17 @@ def _fetch_baidu_gushitong_quote(code: str) -> Dict[str, Any]:
             "query": "基金净值估值",
             "code": c,
             "word": c,
+            "market": "ab",
+            "finClientType": "pc",
+        },
+        {
+            "openapi": "1",
+            "dspName": "iphone",
+            "tn": "tangram",
+            "client": "app",
+            "query": "基金净值估值",
+            "code": c,
+            "word": c,
             "resource_id": "51171",
             "market": "fo",
             "finClientType": "pc",
@@ -1621,7 +1635,10 @@ def _fetch_baidu_gushitong_quote(code: str) -> Dict[str, Any]:
             continue
 
     html_urls = [
+        f"https://gushitong.baidu.com/fund/ab-{c}",
+        f"https://gushitong.baidu.com/fund/ab{c}",
         f"https://gushitong.baidu.com/fund/fo-{c}",
+        f"https://gushitong.baidu.com/fund/fo{c}",
         f"https://gushitong.baidu.com/fund/{c}",
     ]
     for url in html_urls:
