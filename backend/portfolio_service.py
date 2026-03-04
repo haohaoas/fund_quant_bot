@@ -1121,6 +1121,46 @@ def _build_baidu_quote_from_payload(code: str, payload: Any) -> Dict[str, Any]:
             pct = sorted(pct_candidates2, key=lambda x: x[0], reverse=True)[0][1]
 
     if nav is None:
+        # Last fallback: semantic regex scan over serialized payload text.
+        try:
+            import json as _json
+
+            blob = _json.dumps(payload, ensure_ascii=False)
+        except Exception:
+            blob = str(payload or "")
+
+        def _first_float_by_patterns(patterns: List[str]) -> Optional[float]:
+            for pat in patterns:
+                m = re.search(pat, blob, flags=re.IGNORECASE)
+                if not m:
+                    continue
+                v = _safe_float(m.group(1))
+                if v is not None:
+                    return v
+            return None
+
+        nav = _first_float_by_patterns(
+            [
+                r"(?:估算?净值|实时净值|最新净值|单位净值|净值|估值|nav|net\s*value)[^0-9\-+]{0,16}([-+]?\d+(?:\.\d+)?)",
+                r"(?:price|latest|current)[^0-9\-+]{0,16}([-+]?\d+(?:\.\d+)?)",
+            ]
+        )
+        prev_nav = _first_float_by_patterns(
+            [
+                r"(?:前一日净值|上一日净值|昨日净值|昨收|前收|previous|prev)[^0-9\-+]{0,16}([-+]?\d+(?:\.\d+)?)",
+            ]
+        )
+        pct = _first_float_by_patterns(
+            [
+                r"(?:涨跌幅|日涨幅|涨幅|变化率|涨跌|change\s*ratio|pct|growth)[^0-9\-+]{0,16}([-+]?\d+(?:\.\d+)?)\s*%",
+                r"(?:涨跌幅|日涨幅|涨幅|变化率|涨跌|change\s*ratio|pct|growth)[^0-9\-+]{0,16}([-+]?\d+(?:\.\d+)?)",
+            ]
+        )
+        # Ratio to percent.
+        if pct is not None and abs(float(pct)) <= 2.0:
+            pct = float(pct) * 100.0
+
+    if nav is None:
         return {"ok": False, "error": "baidu payload missing nav"}
 
     name = str(
