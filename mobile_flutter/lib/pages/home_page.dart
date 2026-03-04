@@ -93,7 +93,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   static const List<String> _indicators = <String>["今日", "5日", "10日"];
   static const List<String> _sectorTypes = <String>["行业资金流", "概念资金流"];
   static const List<String> _actions = <String>["BUY", "SELL", "SIP", "REDEEM"];
-  static const Duration _autoRefreshInterval = Duration(seconds: 5);
+  static const Duration _autoRefreshInterval = Duration(seconds: 20);
   static const String _quoteSourcePrefKey = "quote_source_mode";
   static const String _fundSearchHistoryPrefKey = "fund_search_history_v1";
 
@@ -167,7 +167,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   void _startAutoRefresh() {
     _autoRefreshTimer?.cancel();
     _autoRefreshTimer = Timer.periodic(_autoRefreshInterval, (_) {
-      unawaited(_refreshCurrentTabSilently(forceRefresh: true));
+      unawaited(_refreshCurrentTabSilently(forceRefresh: false));
     });
   }
 
@@ -1104,8 +1104,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     ).showSnackBar(
         SnackBar(content: Text("已切换：${_quoteSourceLabel(selected)}")));
     if (_portfolio != null) {
-      // Keep source switch interaction instant; refresh in background.
-      unawaited(_reload(forceRefresh: true, showLoading: false));
+      // Keep source switch instant and refresh only active tab to avoid
+      // unnecessary background fan-out slowing down holdings tab.
+      unawaited(_refreshCurrentTab(forceRefresh: true, showLoading: false));
     } else {
       await _reload(forceRefresh: true);
     }
