@@ -195,28 +195,55 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
     _autoRefreshInFlight = true;
     try {
-      if (_tabIndex == 0) {
-        await _loadPortfolio(
-          showLoading: false,
-          forceRefresh: forceRefresh,
-        );
-        unawaited(_loadMajorIndices(showLoading: false));
-      } else if (_tabIndex == 1) {
-        await _loadWatchlist(showLoading: false);
-      } else if (_tabIndex == 2) {
-        await _loadSectorFlow(showLoading: false);
-      } else if (_tabIndex == 3) {
-        await _loadNews(showLoading: false);
-      } else if (_tabIndex == 4) {
-        await _loadAccounts(showLoading: false);
-      } else {
-        await _loadPortfolio(
-          showLoading: false,
-          forceRefresh: forceRefresh,
-        );
-      }
+      await _refreshCurrentTab(forceRefresh: forceRefresh, showLoading: false);
     } finally {
       _autoRefreshInFlight = false;
+    }
+  }
+
+  Future<void> _refreshCurrentTab({
+    bool forceRefresh = false,
+    bool showLoading = false,
+  }) async {
+    if (_tabIndex == 0) {
+      await _loadPortfolio(
+        showLoading: showLoading,
+        forceRefresh: forceRefresh,
+      );
+      unawaited(_loadMajorIndices(showLoading: false));
+      return;
+    }
+    if (_tabIndex == 1) {
+      await _loadWatchlist(showLoading: showLoading);
+      return;
+    }
+    if (_tabIndex == 2) {
+      await _loadSectorFlow(showLoading: showLoading);
+      return;
+    }
+    if (_tabIndex == 3) {
+      await _loadNews(showLoading: showLoading);
+      return;
+    }
+    if (_tabIndex == 4) {
+      await _loadAccounts(showLoading: showLoading);
+      return;
+    }
+    await _loadPortfolio(
+      showLoading: showLoading,
+      forceRefresh: forceRefresh,
+    );
+  }
+
+  Future<void> _onPullRefresh() async {
+    await _refreshCurrentTab(forceRefresh: true, showLoading: true);
+    if (_tabIndex == 0) {
+      // Keep pull-to-refresh responsive: refresh holdings first, then sync
+      // the remaining tabs in background without blocking the indicator.
+      unawaited(_loadAccounts(showLoading: false));
+      unawaited(_loadWatchlist(showLoading: false));
+      unawaited(_loadSectorFlow(showLoading: false));
+      unawaited(_loadNews(showLoading: false));
     }
   }
 
@@ -3047,7 +3074,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         Expanded(
           child: RefreshIndicator(
             displacement: 28,
-            onRefresh: () => _reload(forceRefresh: true),
+            onRefresh: _onPullRefresh,
             child: ListView(
               physics: const _ShortPullBouncingPhysics(
                 parent: AlwaysScrollableScrollPhysics(),
@@ -3508,7 +3535,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         body: _tabIndex == 0 || _tabIndex == 4
             ? body
             : RefreshIndicator(
-                onRefresh: () => _reload(forceRefresh: true),
+                onRefresh: _onPullRefresh,
                 child: body,
               ),
         bottomNavigationBar: DecoratedBox(

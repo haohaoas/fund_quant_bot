@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, Optional
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -51,9 +52,9 @@ def portfolio(
     if force_refresh:
         clear_fn = getattr(ps, "clear_fund_gz_cache", None)
         source_mode = str(quote_source or "").strip().lower()
-        # estimate/fund123 modes are latency-sensitive; keep short-lived cache to avoid
-        # serial network calls timing out on portfolio page.
-        if callable(clear_fn) and source_mode not in {"estimate", "fund123"}:
+        # estimate/fund123/settled modes are latency-sensitive; keep short-lived
+        # cache to avoid cold-start fanout causing request timeout.
+        if callable(clear_fn) and source_mode not in {"estimate", "fund123", "settled"}:
             clear_fn()
     cashflow_fn = getattr(ps, "get_cashflow_summary", None)
 
@@ -97,8 +98,15 @@ def portfolio(
         else:
             f_flow = pool.submit(_build_cashflow_fallback)
 
+        # Keep a strict total budget for the route to avoid sequential
+        # 10s+10s waits causing client-side timeout (Flutter API timeout 12s).
+        deadline = time.monotonic() + _PORTFOLIO_ROUTE_TIMEOUT_SECONDS
+
+        def _remaining_timeout() -> float:
+            return max(0.01, deadline - time.monotonic())
+
         try:
-            classic_positions = f_pos.result(timeout=_PORTFOLIO_ROUTE_TIMEOUT_SECONDS) or []
+            classic_positions = f_pos.result(timeout=_remaining_timeout()) or []
         except FuturesTimeoutError:
             try:
                 f_pos.cancel()
@@ -109,7 +117,7 @@ def portfolio(
             classic_positions = []
 
         try:
-            cashflow = f_flow.result(timeout=_PORTFOLIO_ROUTE_TIMEOUT_SECONDS) or cashflow
+            cashflow = f_flow.result(timeout=_remaining_timeout()) or cashflow
         except FuturesTimeoutError:
             try:
                 f_flow.cancel()
