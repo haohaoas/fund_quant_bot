@@ -137,9 +137,25 @@ class _FundQuantMobileAppState extends State<FundQuantMobileApp> {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = ColorScheme.fromSeed(
+      seedColor: const Color(0xFF275BEB),
+      brightness: Brightness.light,
+    );
     final baseTheme = ThemeData(
       useMaterial3: true,
-      colorSchemeSeed: Colors.blue,
+      colorScheme: scheme,
+      scaffoldBackgroundColor: const Color(0xFFF3F5F9),
+      fontFamily: "PingFang SC",
+      appBarTheme: const AppBarTheme(
+        centerTitle: false,
+        backgroundColor: Color(0xFFF3F5F9),
+        foregroundColor: Color(0xFF1F2A44),
+        elevation: 0,
+        scrolledUnderElevation: 0,
+      ),
+      snackBarTheme: const SnackBarThemeData(
+        behavior: SnackBarBehavior.floating,
+      ),
     );
 
     return MaterialApp(

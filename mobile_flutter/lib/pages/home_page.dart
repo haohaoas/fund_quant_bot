@@ -1524,83 +1524,297 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     required int totalCount,
     required int holdingCount,
   }) {
+    final sourceText = _quoteSourceLabel(_quoteSourceMode);
     return Container(
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(18),
+        gradient: const LinearGradient(
+          colors: [Color(0xFF2254E6), Color(0xFF3B7BFF)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x2A2E5ED7),
+            blurRadius: 16,
+            offset: Offset(0, 8),
+          ),
+        ],
       ),
       child: Column(
         children: [
           Row(
             children: [
-              const Text(
-                "自选",
-                style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w700,
-                  color: Color(0xFF1F2A44),
+              Container(
+                width: 30,
+                height: 30,
+                decoration: BoxDecoration(
+                  color: const Color(0x28FFFFFF),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                alignment: Alignment.center,
+                child: const Icon(
+                  Icons.star_rounded,
+                  size: 17,
+                  color: Colors.white,
                 ),
               ),
               const SizedBox(width: 8),
-              Text(
-                "$totalCount 支",
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: Color(0xFF7B8599),
+              const Text(
+                "自选基金池",
+                style: TextStyle(
+                  fontSize: 20 * 0.92,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.white,
                 ),
               ),
-              const Spacer(),
+              const SizedBox(width: 6),
+              const Expanded(
+                child: Text(
+                  "点击单列进入分析",
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Color(0xCCDCE7FF),
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
               FilledButton.tonalIcon(
                 onPressed: _loadingWatchlist ? null : _onAddWatchlistPressed,
                 icon: const Icon(Icons.add_rounded, size: 18),
                 label: const Text("添加"),
                 style: FilledButton.styleFrom(
+                  foregroundColor: const Color(0xFF1E4FD8),
+                  backgroundColor: Colors.white,
+                  disabledBackgroundColor: const Color(0x80FFFFFF),
                   visualDensity: VisualDensity.compact,
                   padding:
                       const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(999),
+                  ),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 10),
           Row(
             children: [
-              Container(
-                padding: const EdgeInsets.only(bottom: 4),
-                decoration: const BoxDecoration(
-                  border: Border(
-                    bottom: BorderSide(color: Color(0xFF2E5ED7), width: 2),
-                  ),
-                ),
-                child: const Text(
-                  "全部",
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w700,
-                    color: Color(0xFF1F2A44),
-                  ),
+              _buildWatchlistStatChip("总数", "$totalCount 支"),
+              const SizedBox(width: 8),
+              _buildWatchlistStatChip("持有", "$holdingCount 支"),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _buildWatchlistStatChip("数据源", sourceText),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          const Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              "长按基金可修改板块或移除自选",
+              style: TextStyle(
+                fontSize: 12,
+                color: Color(0xCCDCE7FF),
+                fontWeight: FontWeight.w500,
+                letterSpacing: 0.1,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildWatchlistStatChip(String label, String value) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0x1FFFFFFF),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0x38FFFFFF)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            "$label ",
+            style: const TextStyle(
+              fontSize: 11,
+              color: Color(0xFFDCE7FF),
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          Flexible(
+            child: Text(
+              value,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 12,
+                color: Colors.white,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildWatchlistRow(_WatchlistDisplayItem item, int rank) {
+    final analysisName = item.name.trim().isEmpty ? item.code : item.name;
+    return Material(
+      color: Colors.white,
+      child: InkWell(
+        onTap: () {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => _FundAnalysisPage(
+                apiClient: widget.apiClient,
+                code: item.code,
+                name: analysisName,
+                quoteSource: _quoteSourceMode,
+              ),
+            ),
+          );
+        },
+        onLongPress: () {
+          unawaited(_showWatchlistItemActions(item));
+        },
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+          decoration: const BoxDecoration(
+            border: Border(bottom: BorderSide(color: Color(0xFFF0F2F7))),
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                flex: 6,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          width: 22,
+                          height: 22,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            color: rank <= 3
+                                ? const Color(0xFFE7EEFF)
+                                : const Color(0xFFF1F4FA),
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: Text(
+                            "$rank",
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              color: rank <= 3
+                                  ? const Color(0xFF2E5ED7)
+                                  : const Color(0xFF6A738B),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            item.displayName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
+                              color: Color(0xFF1F2A44),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        Text(
+                          item.code,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Color(0xFF7B8599),
+                          ),
+                        ),
+                        if (item.isHolding) ...[
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 5,
+                              vertical: 1,
+                            ),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFE8F0FF),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: const Text(
+                              "持有",
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: Color(0xFF2E5ED7),
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                        if (item.latestPrice != null) ...[
+                          const SizedBox(width: 8),
+                          Text(
+                            _fmt(item.latestPrice!),
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Color(0xFF9AA1B2),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ],
                 ),
               ),
-              const SizedBox(width: 16),
-              Text(
-                "持有 $holdingCount",
-                style: const TextStyle(
-                  fontSize: 14,
-                  color: Color(0xFF7B8599),
+              Expanded(
+                flex: 2,
+                child: Text(
+                  _fmtWatchPct(item.latestPct),
+                  textAlign: TextAlign.right,
+                  style: _watchPctStyle(item.latestPct),
                 ),
               ),
-              const Spacer(),
-              const Text(
-                "持有默认并入自选",
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Color(0xFF9AA1B2),
+              Expanded(
+                flex: 2,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      _fmtWatchPct(item.sectorPct),
+                      textAlign: TextAlign.right,
+                      style: _watchPctStyle(item.sectorPct),
+                    ),
+                    if (item.sectorName.isNotEmpty)
+                      Text(
+                        item.sectorName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Color(0xFF9AA1B2),
+                        ),
+                      ),
+                  ],
                 ),
               ),
             ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -2882,7 +3096,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           Container(
             decoration: BoxDecoration(
               color: Colors.white,
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: const Color(0xFFE5EBF7)),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x0D1D2A4A),
+                  blurRadius: 12,
+                  offset: Offset(0, 4),
+                ),
+              ],
             ),
             child: Column(
               children: [
@@ -2891,12 +3113,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   child: Row(
                     children: [
                       Expanded(
-                        flex: 5,
+                        flex: 6,
                         child: Text(
-                          "基金名称",
+                          "基金 / 代码",
                           style: TextStyle(
                             color: Color(0xFF7B8599),
-                            fontSize: 13,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
                           ),
                         ),
                       ),
@@ -2907,7 +3130,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                           textAlign: TextAlign.right,
                           style: TextStyle(
                             color: Color(0xFF7B8599),
-                            fontSize: 13,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
                           ),
                         ),
                       ),
@@ -2918,137 +3142,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                           textAlign: TextAlign.right,
                           style: TextStyle(
                             color: Color(0xFF7B8599),
-                            fontSize: 13,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
                           ),
                         ),
                       ),
                     ],
                   ),
                 ),
-                for (final item in displayItems)
-                  InkWell(
-                    onTap: () {
-                      final analysisName =
-                          item.name.trim().isEmpty ? item.code : item.name;
-                      Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => _FundAnalysisPage(
-                            apiClient: widget.apiClient,
-                            code: item.code,
-                            name: analysisName,
-                            quoteSource: _quoteSourceMode,
-                          ),
-                        ),
-                      );
-                    },
-                    onLongPress: () {
-                      unawaited(_showWatchlistItemActions(item));
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.fromLTRB(12, 9, 12, 9),
-                      decoration: const BoxDecoration(
-                        border: Border(
-                            bottom: BorderSide(color: Color(0xFFF0F2F7))),
-                      ),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            flex: 5,
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  item.displayName,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    fontSize: 17,
-                                    fontWeight: FontWeight.w600,
-                                    color: Color(0xFF1F2A44),
-                                  ),
-                                ),
-                                const SizedBox(height: 2),
-                                Row(
-                                  children: [
-                                    Text(
-                                      item.code,
-                                      style: const TextStyle(
-                                        fontSize: 13,
-                                        color: Color(0xFF7B8599),
-                                      ),
-                                    ),
-                                    if (item.isHolding) ...[
-                                      const SizedBox(width: 6),
-                                      Container(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 5,
-                                          vertical: 1,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: const Color(0xFFE8F0FF),
-                                          borderRadius:
-                                              BorderRadius.circular(4),
-                                        ),
-                                        child: const Text(
-                                          "持有",
-                                          style: TextStyle(
-                                            fontSize: 11,
-                                            color: Color(0xFF2E5ED7),
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                    if (item.latestPrice != null) ...[
-                                      const SizedBox(width: 8),
-                                      Text(
-                                        _fmt(item.latestPrice!),
-                                        style: const TextStyle(
-                                          fontSize: 12,
-                                          color: Color(0xFF9AA1B2),
-                                        ),
-                                      ),
-                                    ],
-                                  ],
-                                ),
-                              ],
-                            ),
-                          ),
-                          Expanded(
-                            flex: 2,
-                            child: Text(
-                              _fmtWatchPct(item.latestPct),
-                              textAlign: TextAlign.right,
-                              style: _watchPctStyle(item.latestPct),
-                            ),
-                          ),
-                          Expanded(
-                            flex: 2,
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.end,
-                              children: [
-                                Text(
-                                  _fmtWatchPct(item.sectorPct),
-                                  textAlign: TextAlign.right,
-                                  style: _watchPctStyle(item.sectorPct),
-                                ),
-                                if (item.sectorName.isNotEmpty)
-                                  Text(
-                                    item.sectorName,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      fontSize: 12,
-                                      color: Color(0xFF9AA1B2),
-                                    ),
-                                  ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
+                for (var index = 0; index < displayItems.length; index++)
+                  _buildWatchlistRow(displayItems[index], index + 1),
               ],
             ),
           ),
@@ -3069,6 +3172,61 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       padding: const EdgeInsets.all(12),
       children: [
         _buildErrorCard(_sectorError),
+        Container(
+          padding: const EdgeInsets.fromLTRB(14, 13, 14, 12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            gradient: const LinearGradient(
+              colors: [Color(0xFF12367B), Color(0xFF1D4FAF)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: const Color(0x2AFFFFFF),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                alignment: Alignment.center,
+                child: const Icon(
+                  Icons.local_fire_department_rounded,
+                  color: Colors.white,
+                  size: 18,
+                ),
+              ),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      "资金流热力榜",
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 16,
+                      ),
+                    ),
+                    SizedBox(height: 2),
+                    Text(
+                      "查看板块主力资金强弱与方向",
+                      style: TextStyle(
+                        color: Color(0xFFD6E5FF),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 10),
         _buildControls(),
         const SizedBox(height: 10),
         _buildSectors(context),
@@ -3342,6 +3500,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         appBar: _tabIndex == 0 || _tabIndex == 4
             ? null
             : AppBar(
+                elevation: 0,
+                scrolledUnderElevation: 0,
+                backgroundColor: const Color(0xFFF3F5F9),
                 title: Text(tabTitles[_tabIndex]),
               ),
         body: _tabIndex == 0 || _tabIndex == 4
@@ -3374,46 +3535,55 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   const Divider(
                       height: 1, thickness: 1, color: Color(0xFFE9EDF4)),
                 ],
-                BottomNavigationBar(
-                  currentIndex: _tabIndex,
-                  type: BottomNavigationBarType.fixed,
-                  backgroundColor: Colors.transparent,
-                  elevation: 0,
-                  selectedItemColor: const Color(0xFF2E5ED7),
-                  unselectedItemColor: const Color(0xFF7B8599),
-                  onTap: (index) {
-                    setState(() {
-                      _tabIndex = index;
-                    });
-                    unawaited(_refreshCurrentTabSilently());
-                  },
-                  items: const [
-                    BottomNavigationBarItem(
-                      icon: Icon(Icons.account_balance_wallet_outlined),
-                      activeIcon: Icon(Icons.account_balance_wallet),
-                      label: "持有",
+                NavigationBarTheme(
+                  data: const NavigationBarThemeData(
+                    height: 62,
+                    backgroundColor: Colors.white,
+                    indicatorColor: Color(0xFFE8EEFF),
+                    surfaceTintColor: Colors.transparent,
+                    labelTextStyle: WidgetStatePropertyAll(
+                      TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
-                    BottomNavigationBarItem(
-                      icon: Icon(Icons.lightbulb_outline),
-                      activeIcon: Icon(Icons.lightbulb),
-                      label: "自选",
-                    ),
-                    BottomNavigationBarItem(
-                      icon: Icon(Icons.show_chart_outlined),
-                      activeIcon: Icon(Icons.show_chart),
-                      label: "资金流",
-                    ),
-                    BottomNavigationBarItem(
-                      icon: Icon(Icons.article_outlined),
-                      activeIcon: Icon(Icons.article),
-                      label: "新闻",
-                    ),
-                    BottomNavigationBarItem(
-                      icon: Icon(Icons.person_outline),
-                      activeIcon: Icon(Icons.person),
-                      label: "我的",
-                    ),
-                  ],
+                  ),
+                  child: NavigationBar(
+                    selectedIndex: _tabIndex,
+                    onDestinationSelected: (index) {
+                      setState(() {
+                        _tabIndex = index;
+                      });
+                      unawaited(_refreshCurrentTabSilently());
+                    },
+                    destinations: const [
+                      NavigationDestination(
+                        icon: Icon(Icons.account_balance_wallet_outlined),
+                        selectedIcon: Icon(Icons.account_balance_wallet),
+                        label: "持有",
+                      ),
+                      NavigationDestination(
+                        icon: Icon(Icons.lightbulb_outline),
+                        selectedIcon: Icon(Icons.lightbulb),
+                        label: "自选",
+                      ),
+                      NavigationDestination(
+                        icon: Icon(Icons.show_chart_outlined),
+                        selectedIcon: Icon(Icons.show_chart),
+                        label: "资金流",
+                      ),
+                      NavigationDestination(
+                        icon: Icon(Icons.article_outlined),
+                        selectedIcon: Icon(Icons.article),
+                        label: "新闻",
+                      ),
+                      NavigationDestination(
+                        icon: Icon(Icons.person_outline),
+                        selectedIcon: Icon(Icons.person),
+                        label: "我的",
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
