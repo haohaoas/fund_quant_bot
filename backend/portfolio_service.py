@@ -857,6 +857,102 @@ def _build_baidu_quote_from_payload(code: str, payload: Any) -> Dict[str, Any]:
             prev_nav = None
 
     if nav is None:
+        # Fallback: infer by fuzzy key semantics (Chinese/English mixed payloads).
+        scalars: List[Tuple[str, Any]] = []
+
+        def _walk(node: Any) -> None:
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    if isinstance(v, (dict, list)):
+                        _walk(v)
+                    else:
+                        scalars.append((str(k or ""), v))
+            elif isinstance(node, list):
+                for v in node:
+                    _walk(v)
+
+        _walk(payload)
+
+        nav_candidates: List[Tuple[int, float]] = []
+        prev_candidates: List[Tuple[int, float]] = []
+        pct_candidates: List[Tuple[int, float]] = []
+
+        def _score_key(text: str, terms: List[str]) -> int:
+            t = str(text or "").strip().lower()
+            score = 0
+            for term in terms:
+                if term.lower() in t:
+                    score += 1
+            return score
+
+        nav_terms = [
+            "gsz",
+            "nav",
+            "netvalue",
+            "forecast",
+            "estimate",
+            "price",
+            "净值",
+            "估值",
+            "最新价",
+            "现价",
+            "价格",
+        ]
+        prev_terms = [
+            "dwjz",
+            "prev",
+            "preclose",
+            "previous",
+            "昨",
+            "昨日",
+            "前收",
+            "昨收",
+            "单位净值",
+            "昨净值",
+        ]
+        pct_terms = [
+            "gszzl",
+            "pct",
+            "ratio",
+            "change",
+            "growth",
+            "涨跌幅",
+            "涨幅",
+            "变化率",
+            "涨跌",
+        ]
+
+        for k, v in scalars:
+            num = _safe_float(v)
+            if num is None:
+                continue
+            key = str(k or "")
+
+            nav_score = _score_key(key, nav_terms)
+            if nav_score > 0 and 0.01 <= float(num) <= 100.0:
+                nav_candidates.append((nav_score, float(num)))
+
+            prev_score = _score_key(key, prev_terms)
+            if prev_score > 0 and 0.01 <= float(num) <= 100.0:
+                prev_candidates.append((prev_score, float(num)))
+
+            pct_score = _score_key(key, pct_terms)
+            if pct_score > 0 and -100.0 <= float(num) <= 100.0:
+                pct_v = float(num)
+                # Some payloads return ratio like 0.0032.
+                if abs(pct_v) <= 2.0 and "%" not in str(v):
+                    if any(x in key.lower() for x in ("ratio", "growth", "forecast")):
+                        pct_v = pct_v * 100.0
+                pct_candidates.append((pct_score, pct_v))
+
+        if nav_candidates:
+            nav = sorted(nav_candidates, key=lambda x: x[0], reverse=True)[0][1]
+        if prev_candidates:
+            prev_nav = sorted(prev_candidates, key=lambda x: x[0], reverse=True)[0][1]
+        if pct_candidates:
+            pct = sorted(pct_candidates, key=lambda x: x[0], reverse=True)[0][1]
+
+    if nav is None:
         return {"ok": False, "error": "baidu payload missing nav"}
 
     name = str(
