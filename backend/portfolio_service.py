@@ -1396,27 +1396,86 @@ def _fetch_baidu_gushitong_quote(code: str) -> Dict[str, Any]:
         except Exception as e:
             diag.append(f"tpl:{type(e).__name__}")
 
-    api_candidates = [
-        ("https://finance.pae.baidu.com/sapi/v1/fund/quote", {"code": c, "finClientType": "pc"}),
-        ("https://finance.pae.baidu.com/vapi/v1/fund/quote", {"code": c, "finClientType": "pc"}),
-        ("https://finance.pae.baidu.com/sapi/v1/fundquotation", {"code": c, "finClientType": "pc"}),
-        ("https://finance.pae.baidu.com/vapi/v1/fundquotation", {"code": c, "finClientType": "pc"}),
+    code_variants = [
+        c,
+        f"fo-{c}",
+        f"fo{c}",
+        f"{c}.OF",
     ]
+    base_param_variants = [
+        {"finClientType": "pc"},
+        {"finClientType": "pc", "market": "fo"},
+    ]
+    api_defs = [
+        ("https://finance.pae.baidu.com/sapi/v1/fund/quote", ["code", "symbol"]),
+        ("https://finance.pae.baidu.com/sapi/v1/fundquotation", ["code", "symbol"]),
+    ]
+    api_candidates: List[Tuple[str, Dict[str, Any]]] = []
+    for url, code_keys in api_defs:
+        for cv in code_variants:
+            for ck in code_keys:
+                for base_params in base_param_variants:
+                    params = dict(base_params)
+                    params[ck] = cv
+                    api_candidates.append((url, params))
+
+    def _unbox_payload(payload: Any) -> List[Any]:
+        out: List[Any] = [payload]
+        try:
+            if isinstance(payload, dict):
+                result = payload.get("Result")
+                if isinstance(result, list):
+                    out.extend(result)
+                elif result is not None:
+                    out.append(result)
+                data = payload.get("data")
+                if isinstance(data, list):
+                    out.extend(data)
+                elif data is not None:
+                    out.append(data)
+        except Exception:
+            pass
+        return out
+
     for url, params in api_candidates:
         name = url.rsplit("/", 1)[-1]
         try:
             resp = sess.get(url, params=params, headers=headers, timeout=timeout_pair, proxies={})
-            diag.append(f"api:{name}:{resp.status_code}")
+            code_token = str(params.get("code") or params.get("symbol") or params.get("secid") or params.get("fundCode") or "")
+            diag.append(f"api:{name}:{resp.status_code}:{code_token}")
             if resp.status_code != 200:
                 continue
             payload = resp.json()
-            out = _build_baidu_quote_from_payload(c, payload)
-            if out.get("ok"):
-                return out
-            out_txt = _build_baidu_quote_from_payload(c, resp.text)
-            if out_txt.get("ok"):
-                return out_txt
-            diag.append(f"api:{name}:parse_failed:{_payload_signature(payload)}")
+            hit = False
+            for candidate in _unbox_payload(payload):
+                out = _build_baidu_quote_from_payload(c, candidate)
+                if out.get("ok"):
+                    return out
+                if isinstance(candidate, str):
+                    out_txt = _build_baidu_quote_from_payload(c, candidate)
+                    if out_txt.get("ok"):
+                        return out_txt
+                try:
+                    if isinstance(candidate, dict) and candidate.get("Result") is None:
+                        pass
+                except Exception:
+                    pass
+                hit = True
+            if not hit:
+                out = _build_baidu_quote_from_payload(c, payload)
+                if out.get("ok"):
+                    return out
+                out_txt = _build_baidu_quote_from_payload(c, resp.text)
+                if out_txt.get("ok"):
+                    return out_txt
+            try:
+                result_null = isinstance(payload, dict) and payload.get("Result") is None
+            except Exception:
+                result_null = False
+            if result_null:
+                diag.append(f"api:{name}:result_null")
+            else:
+                diag.append(f"api:{name}:parse_failed:{_payload_signature(payload)}")
         except Exception as e:
             diag.append(f"api:{name}:{type(e).__name__}")
             continue
