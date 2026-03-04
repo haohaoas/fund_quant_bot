@@ -59,11 +59,7 @@ _OPEN_FUND_DAILY_TTL_SECONDS = 600
 _OPEN_FUND_DAILY_CACHE: Dict[str, Any] = {"ts": 0.0, "data": {}}
 _ETF_SPOT_TTL_SECONDS = 120
 _ETF_SPOT_CACHE: Dict[str, Any] = {"ts": 0.0, "data": {}}
-_EARLY_SETTLED_SWITCH_HOUR = int(os.getenv("EARLY_SETTLED_SWITCH_HOUR", "17"))
 _SETTLED_SWITCH_HOUR = int(os.getenv("SETTLED_SWITCH_HOUR", "19"))
-_AFTER_CLOSE_CHANGE_TTL_SECONDS = 86400
-_AFTER_CLOSE_CHANGE_CACHE: Dict[str, Tuple[float, Tuple[Any, Any, Any, Any]]] = {}
-_AFTER_CLOSE_CHANGE_CACHE_MAX = int(os.getenv("AFTER_CLOSE_CHANGE_CACHE_MAX", "2000"))
 DEFAULT_ACCOUNT_ID = 1
 _QUOTE_SOURCE_MODES = {"auto", "estimate", "settled", "fund123"}
 _PORTFOLIO_ENRICH_TIMEOUT_SECONDS = 8.0
@@ -118,7 +114,6 @@ def _trim_ts_cache(cache: Dict[str, float], max_size: int) -> None:
 def _trim_runtime_caches() -> None:
     _trim_timed_cache(_FUNDGZ_CACHE, _FUNDGZ_CACHE_MAX)
     _trim_timed_cache(_SETTLED_NAV_CACHE, _SETTLED_NAV_CACHE_MAX)
-    _trim_timed_cache(_AFTER_CLOSE_CHANGE_CACHE, _AFTER_CLOSE_CHANGE_CACHE_MAX)
     _trim_timed_cache(_FUND123_KEY_CACHE, _FUND123_KEY_CACHE_MAX)
     _trim_ts_cache(_FUND123_FAIL_CACHE, _FUND123_FAIL_CACHE_MAX)
     _trim_timed_cache(_FUND123_TREND_CACHE, _FUND123_TREND_CACHE_MAX)
@@ -131,16 +126,12 @@ def clear_fund_gz_cache(code: Optional[str] = None) -> None:
         for k in keys:
             _FUNDGZ_CACHE.pop(k, None)
         cc = _norm_code6(c)
-        sig_keys = [k for k in _AFTER_CLOSE_CHANGE_CACHE.keys() if str(k).startswith(f"{cc}|")]
-        for k in sig_keys:
-            _AFTER_CLOSE_CHANGE_CACHE.pop(k, None)
         _FUND123_FAIL_CACHE.pop(cc, None)
         trend_keys = [k for k in _FUND123_TREND_CACHE.keys() if str(k).startswith(f"{cc}|")]
         for k in trend_keys:
             _FUND123_TREND_CACHE.pop(k, None)
         return
     _FUNDGZ_CACHE.clear()
-    _AFTER_CLOSE_CHANGE_CACHE.clear()
     _FUND123_FAIL_CACHE.clear()
     _FUND123_TREND_CACHE.clear()
 
@@ -770,48 +761,17 @@ def _parse_local_date(value: Any):
     return None
 
 
-def _quote_signature(gz: Dict[str, Any]) -> Tuple[Any, Any, Any, Any]:
-    nav = _safe_float(gz.get("nav"))
-    prev = _safe_float(gz.get("prev_nav"))
-    pct = _safe_float(gz.get("daily_change_pct"))
-    return (
-        round(float(nav), 6) if nav is not None else None,
-        round(float(prev), 6) if prev is not None else None,
-        round(float(pct), 4) if pct is not None else None,
-        str(gz.get("jzrq") or "").strip(),
-    )
-
-
-def _mark_after_close_quote_changed(code: str, gz: Dict[str, Any]) -> bool:
-    now_dt = datetime.now()
-    # Only track weekday after-close movement for early "settled" signal.
-    if now_dt.weekday() >= 5 or now_dt.hour < _EARLY_SETTLED_SWITCH_HOUR:
-        return False
-    c = _norm_code6(code)
-    if not c:
-        return False
-    key = f"{c}|{now_dt.strftime('%Y-%m-%d')}"
-    sig = _quote_signature(gz)
-    now = time.time()
-    old = _AFTER_CLOSE_CHANGE_CACHE.get(key)
-    _AFTER_CLOSE_CHANGE_CACHE[key] = (now, sig)
-    if not old:
-        return False
-    old_ts, old_sig = old
-    if (now - float(old_ts)) > _AFTER_CLOSE_CHANGE_TTL_SECONDS:
-        return False
-    return old_sig != sig
-
-
 def _is_nav_settled(gz: Dict[str, Any]) -> bool:
     jzrq_date = _parse_local_date(gz.get("jzrq"))
     if jzrq_date is None:
         return False
     now_dt = datetime.now()
-    # Weekday daytime: never treat quote as settled to avoid showing
-    # previous-trading-day NAV as today's final data.
-    if now_dt.weekday() < 5 and now_dt.hour < _EARLY_SETTLED_SWITCH_HOUR:
-        return False
+    if now_dt.weekday() < 5:
+        # Workday: do not mark settled before nightly cutoff, and only mark
+        # when NAV date reaches today (avoid showing previous day as "updated").
+        if now_dt.hour < _SETTLED_SWITCH_HOUR:
+            return False
+        return jzrq_date >= now_dt.date()
 
     # Weekend: latest valid settled NAV is usually Friday.
     expected = now_dt.date()
@@ -819,18 +779,7 @@ def _is_nav_settled(gz: Dict[str, Any]) -> bool:
         expected = expected - timedelta(days=1)
     elif now_dt.weekday() == 6:
         expected = expected - timedelta(days=2)
-    if jzrq_date >= expected:
-        return True
-
-    # Early-close heuristic (weekday 17:00-19:00): if quote fields changed
-    # after close, allow early switch to "updated" status.
-    if (
-        now_dt.weekday() < 5
-        and _EARLY_SETTLED_SWITCH_HOUR <= now_dt.hour < _SETTLED_SWITCH_HOUR
-        and bool(gz.get("_after_close_changed"))
-    ):
-        return True
-    return False
+    return jzrq_date >= expected
 
 
 def _fetch_settled_nav_snapshot(code: str, jzrq: str) -> Dict[str, Any]:
@@ -1331,11 +1280,10 @@ def fetch_fund_gz(code: str, source_mode: str = "auto") -> Dict[str, Any]:
             "gztime": str(obj.get("gztime") or "").strip(),
             "source": "fundgz",
         }
-        out["_after_close_changed"] = _mark_after_close_quote_changed(c, out)
 
         # Nightly/closed-window phase: prefer settled NAV snapshot (real daily
         # change). For estimate mode, only probe when quote is already marked
-        # settled (or after-close changed), to keep refresh latency low.
+        # settled, to keep refresh latency low and avoid premature switch.
         try:
             now_dt = datetime.now()
             should_try_settled = False
@@ -1344,7 +1292,7 @@ def fetch_fund_gz(code: str, source_mode: str = "auto") -> Dict[str, Any]:
             else:
                 should_try_settled = (
                     now_dt.weekday() >= 5
-                    or now_dt.hour >= _EARLY_SETTLED_SWITCH_HOUR
+                    or now_dt.hour >= _SETTLED_SWITCH_HOUR
                     or _is_nav_settled(out)
                 )
             if should_try_settled:
