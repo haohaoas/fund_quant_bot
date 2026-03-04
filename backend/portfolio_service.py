@@ -975,6 +975,140 @@ def _build_baidu_quote_from_payload(code: str, payload: Any) -> Dict[str, Any]:
             pct = sorted(pct_candidates, key=lambda x: x[0], reverse=True)[0][1]
 
     if nav is None:
+        # Fallback: parse "label/value" structures frequently used in Baidu payload.
+        nav_terms = (
+            "估算净值",
+            "估值",
+            "最新净值",
+            "净值",
+            "单位净值",
+            "实时净值",
+            "最新价",
+            "现价",
+            "价格",
+            "forecast",
+            "estimate",
+            "net value",
+            "nav",
+        )
+        prev_terms = (
+            "前一日净值",
+            "前一日",
+            "上一日",
+            "昨日净值",
+            "昨收",
+            "前收",
+            "previous",
+            "prev",
+            "preclose",
+        )
+        pct_terms = (
+            "涨跌幅",
+            "涨幅",
+            "日涨幅",
+            "变化率",
+            "涨跌",
+            "change",
+            "growth",
+            "ratio",
+            "pct",
+        )
+
+        label_keys = (
+            "name",
+            "title",
+            "label",
+            "key",
+            "itemname",
+            "item_name",
+            "desc",
+            "description",
+            "text",
+        )
+        value_keys = (
+            "value",
+            "val",
+            "data",
+            "num",
+            "number",
+            "content",
+            "result",
+            "text",
+        )
+        unit_keys = ("unit", "suffix")
+
+        nav_candidates2: List[Tuple[int, float]] = []
+        prev_candidates2: List[Tuple[int, float]] = []
+        pct_candidates2: List[Tuple[int, float]] = []
+
+        def _contains_any(text: str, terms: Tuple[str, ...]) -> int:
+            t = str(text or "").strip().lower()
+            score = 0
+            for term in terms:
+                if str(term).lower() in t:
+                    score += 1
+            return score
+
+        def _parse_labeled_node(node: Any) -> None:
+            if isinstance(node, dict):
+                low_map = {str(k).strip().lower(): v for k, v in node.items()}
+                label_val = ""
+                value_raw = None
+                unit_val = ""
+
+                for lk in label_keys:
+                    if lk in low_map and low_map[lk] is not None:
+                        label_val = str(low_map[lk]).strip()
+                        if label_val:
+                            break
+                for vk in value_keys:
+                    if vk in low_map:
+                        cand = low_map[vk]
+                        if not isinstance(cand, (dict, list)) and cand is not None:
+                            value_raw = cand
+                            break
+                for uk in unit_keys:
+                    if uk in low_map and low_map[uk] is not None:
+                        unit_val = str(low_map[uk]).strip()
+                        if unit_val:
+                            break
+
+                if label_val and value_raw is not None:
+                    num = _safe_float(value_raw)
+                    if num is not None:
+                        label_text = f"{label_val} {unit_val}".strip()
+                        score_nav = _contains_any(label_text, nav_terms)
+                        score_prev = _contains_any(label_text, prev_terms)
+                        score_pct = _contains_any(label_text, pct_terms)
+
+                        if score_nav > 0 and 0.01 <= float(num) <= 100.0:
+                            nav_candidates2.append((score_nav, float(num)))
+                        if score_prev > 0 and 0.01 <= float(num) <= 100.0:
+                            prev_candidates2.append((score_prev, float(num)))
+                        if score_pct > 0 and -100.0 <= float(num) <= 100.0:
+                            pct_val = float(num)
+                            if abs(pct_val) <= 2.0 and "%" not in str(value_raw):
+                                if any(x in label_text.lower() for x in ("ratio", "growth", "变化率")):
+                                    pct_val = pct_val * 100.0
+                            pct_candidates2.append((score_pct, pct_val))
+
+                for child in node.values():
+                    if isinstance(child, (dict, list)):
+                        _parse_labeled_node(child)
+            elif isinstance(node, list):
+                for child in node:
+                    _parse_labeled_node(child)
+
+        _parse_labeled_node(payload)
+
+        if nav_candidates2:
+            nav = sorted(nav_candidates2, key=lambda x: x[0], reverse=True)[0][1]
+        if prev_candidates2:
+            prev_nav = sorted(prev_candidates2, key=lambda x: x[0], reverse=True)[0][1]
+        if pct_candidates2:
+            pct = sorted(pct_candidates2, key=lambda x: x[0], reverse=True)[0][1]
+
+    if nav is None:
         return {"ok": False, "error": "baidu payload missing nav"}
 
     name = str(
