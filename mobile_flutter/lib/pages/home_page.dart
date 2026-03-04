@@ -75,6 +75,18 @@ class _WatchlistDisplayItem {
   String get displayName => name.trim().isEmpty ? code : name.trim();
 }
 
+class _PortfolioPrefetchEntry {
+  const _PortfolioPrefetchEntry({
+    required this.accountId,
+    required this.fetchedAt,
+    required this.portfolio,
+  });
+
+  final int? accountId;
+  final DateTime fetchedAt;
+  final PortfolioResponse portfolio;
+}
+
 class HomePage extends StatefulWidget {
   const HomePage({
     super.key,
@@ -93,7 +105,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   static const List<String> _indicators = <String>["今日", "5日", "10日"];
   static const List<String> _sectorTypes = <String>["行业资金流", "概念资金流"];
   static const List<String> _actions = <String>["BUY", "SELL", "SIP", "REDEEM"];
-  static const Duration _autoRefreshInterval = Duration(seconds: 20);
+  static const Duration _autoRefreshInterval = Duration(seconds: 5);
+  static const Duration _portfolioPrefetchTtl = Duration(seconds: 18);
   static const String _quoteSourcePrefKey = "quote_source_mode";
   static const String _fundSearchHistoryPrefKey = "fund_search_history_v1";
 
@@ -129,6 +142,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Timer? _autoRefreshTimer;
   bool _autoRefreshInFlight = false;
   String _quoteSourceMode = "estimate";
+  final Map<String, _PortfolioPrefetchEntry> _portfolioPrefetchCache = {};
+  final Set<String> _portfolioPrefetchInFlight = <String>{};
 
   @override
   void initState() {
@@ -141,6 +156,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Future<void> _initPage() async {
     await _restoreQuoteSourceMode();
     await _reload();
+    unawaited(_prefetchOtherQuoteSources());
   }
 
   @override
@@ -179,6 +195,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Future<void> _resumePreRefresh() async {
     await _loadAccounts(showLoading: false);
     await _refreshCurrentTabSilently(forceRefresh: true);
+    unawaited(_prefetchOtherQuoteSources());
   }
 
   Future<void> _refreshCurrentTabSilently({bool forceRefresh = false}) async {
@@ -384,6 +401,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _portfolio = portfolio;
         _portfolioError = null;
       });
+      final key = _portfolioPrefetchKey(_quoteSourceMode, _resolvedAccountId);
+      _portfolioPrefetchCache[key] = _PortfolioPrefetchEntry(
+        accountId: _resolvedAccountId,
+        fetchedAt: DateTime.now(),
+        portfolio: portfolio,
+      );
     } catch (error) {
       if (!mounted) {
         return;
@@ -399,6 +422,70 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           _loadingPortfolio = false;
         });
       }
+    }
+  }
+
+  String _portfolioPrefetchKey(String source, int? accountId) {
+    return "${source.trim().toLowerCase()}|${accountId ?? 0}";
+  }
+
+  PortfolioResponse? _consumeFreshPrefetchedPortfolio(String source) {
+    final key = _portfolioPrefetchKey(source, _resolvedAccountId);
+    final hit = _portfolioPrefetchCache[key];
+    if (hit == null) {
+      return null;
+    }
+    if (DateTime.now().difference(hit.fetchedAt) > _portfolioPrefetchTtl) {
+      _portfolioPrefetchCache.remove(key);
+      return null;
+    }
+    return hit.portfolio;
+  }
+
+  Future<void> _prefetchPortfolioSource(
+    String source, {
+    bool forceRefresh = false,
+  }) async {
+    final normalized = source.trim().toLowerCase();
+    if (normalized.isEmpty) {
+      return;
+    }
+    final key = _portfolioPrefetchKey(normalized, _resolvedAccountId);
+    if (_portfolioPrefetchInFlight.contains(key)) {
+      return;
+    }
+    final cached = _portfolioPrefetchCache[key];
+    if (!forceRefresh &&
+        cached != null &&
+        DateTime.now().difference(cached.fetchedAt) <= _portfolioPrefetchTtl) {
+      return;
+    }
+    _portfolioPrefetchInFlight.add(key);
+    try {
+      final portfolio = await widget.apiClient.fetchPortfolio(
+        forceRefresh: forceRefresh,
+        accountId: _resolvedAccountId,
+        quoteSource: normalized,
+      );
+      _portfolioPrefetchCache[key] = _PortfolioPrefetchEntry(
+        accountId: _resolvedAccountId,
+        fetchedAt: DateTime.now(),
+        portfolio: portfolio,
+      );
+    } catch (_) {
+      // Ignore prefetch failures; active refresh path still handles errors.
+    } finally {
+      _portfolioPrefetchInFlight.remove(key);
+    }
+  }
+
+  Future<void> _prefetchOtherQuoteSources({bool forceRefresh = false}) async {
+    final all = <String>["fund123", "estimate", "settled"];
+    for (final source in all) {
+      if (source == _quoteSourceMode) {
+        continue;
+      }
+      unawaited(_prefetchPortfolioSource(source, forceRefresh: forceRefresh));
     }
   }
 
@@ -1033,6 +1120,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   Future<void> _onSwitchQuoteSourcePressed() async {
+    unawaited(_prefetchOtherQuoteSources());
     final selected = await showModalBottomSheet<String>(
       context: context,
       builder: (sheetContext) {
@@ -1103,13 +1191,23 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       context,
     ).showSnackBar(
         SnackBar(content: Text("已切换：${_quoteSourceLabel(selected)}")));
-    if (_portfolio != null) {
-      // Keep source switch instant and refresh only active tab to avoid
-      // unnecessary background fan-out slowing down holdings tab.
-      unawaited(_refreshCurrentTab(forceRefresh: true, showLoading: false));
-    } else {
-      await _reload(forceRefresh: true);
+    final prefetched = _consumeFreshPrefetchedPortfolio(selected);
+    if (prefetched != null && mounted) {
+      setState(() {
+        _portfolio = prefetched;
+        _portfolioError = null;
+      });
+      unawaited(_loadPortfolio(forceRefresh: false, showLoading: false));
+      unawaited(_prefetchOtherQuoteSources());
+      return;
     }
+    if (_portfolio != null) {
+      unawaited(_loadPortfolio(forceRefresh: true, showLoading: false));
+      unawaited(_prefetchOtherQuoteSources(forceRefresh: true));
+      return;
+    }
+    await _reload(forceRefresh: true);
+    unawaited(_prefetchOtherQuoteSources());
   }
 
   Future<void> _openAccountInfoPage() async {
