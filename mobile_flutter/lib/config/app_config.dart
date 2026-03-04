@@ -5,6 +5,6 @@ class AppConfig {
     "API_BASE_URL",
     // Default to online backend so release builds still work
     // even when --dart-define is omitted.
-    defaultValue: "http://47.112.109.7:8000",
+    defaultValue: "http://8.129.235.203",
   );
 }
