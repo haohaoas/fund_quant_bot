@@ -1334,10 +1334,20 @@ def fetch_fund_gz(code: str, source_mode: str = "auto") -> Dict[str, Any]:
         out["_after_close_changed"] = _mark_after_close_quote_changed(c, out)
 
         # Nightly/closed-window phase: prefer settled NAV snapshot (real daily
-        # change) even under estimate source, as long as snapshot date is not older.
+        # change). For estimate mode, only probe when quote is already marked
+        # settled (or after-close changed), to keep refresh latency low.
         try:
             now_dt = datetime.now()
-            if now_dt.weekday() >= 5 or now_dt.hour >= _EARLY_SETTLED_SWITCH_HOUR:
+            should_try_settled = False
+            if mode == "estimate":
+                should_try_settled = _is_nav_settled(out)
+            else:
+                should_try_settled = (
+                    now_dt.weekday() >= 5
+                    or now_dt.hour >= _EARLY_SETTLED_SWITCH_HOUR
+                    or _is_nav_settled(out)
+                )
+            if should_try_settled:
                 snap = _fetch_settled_nav_snapshot(c, str(out.get("jzrq") or ""))
                 if snap:
                     snap_nav = _safe_float(snap.get("nav"))
