@@ -187,7 +187,19 @@ class ApiClient {
 
   String _normalizeQuoteSource(String? value) {
     final mode = (value ?? "").trim().toLowerCase();
-    if (mode == "estimate" || mode == "settled" || mode == "fund123") {
+    if (mode == "estimate") {
+      return "tiantian";
+    }
+    if (mode == "fund123") {
+      return "fund123";
+    }
+    if (mode == "settled" || mode == "eastmoney_settled") {
+      return "eastmoney";
+    }
+    if (mode == "tiantian" ||
+        mode == "fund123" ||
+        mode == "baidu" ||
+        mode == "eastmoney") {
       return mode;
     }
     return "auto";

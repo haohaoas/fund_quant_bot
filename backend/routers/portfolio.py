@@ -51,10 +51,13 @@ def portfolio(
 
     if force_refresh:
         clear_fn = getattr(ps, "clear_fund_gz_cache", None)
-        source_mode = str(quote_source or "").strip().lower()
-        # estimate/fund123/settled modes are latency-sensitive; keep short-lived
+        norm_mode = getattr(ps, "_norm_quote_source_mode", None)
+        source_mode = (
+            norm_mode(str(quote_source or "")) if callable(norm_mode) else str(quote_source or "").strip().lower()
+        )
+        # tiantian/fund123/baidu/eastmoney modes are latency-sensitive; keep short-lived
         # cache to avoid cold-start fanout causing request timeout.
-        if callable(clear_fn) and source_mode not in {"estimate", "fund123", "settled"}:
+        if callable(clear_fn) and source_mode not in {"tiantian", "fund123", "baidu", "eastmoney"}:
             clear_fn()
     cashflow_fn = getattr(ps, "get_cashflow_summary", None)
 

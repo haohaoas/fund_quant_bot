@@ -141,7 +141,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final Set<String> _deletingPositionCodes = <String>{};
   Timer? _autoRefreshTimer;
   bool _autoRefreshInFlight = false;
-  String _quoteSourceMode = "estimate";
+  String _quoteSourceMode = "tiantian";
   final Map<String, _PortfolioPrefetchEntry> _portfolioPrefetchCache = {};
   final Set<String> _portfolioPrefetchInFlight = <String>{};
 
@@ -480,7 +480,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   Future<void> _prefetchOtherQuoteSources({bool forceRefresh = false}) async {
-    final all = <String>["fund123", "estimate", "settled"];
+    final all = <String>["tiantian", "fund123", "eastmoney", "baidu"];
     for (final source in all) {
       if (source == _quoteSourceMode) {
         continue;
@@ -1079,14 +1079,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   String _quoteSourceLabel(String mode) {
     switch (mode) {
-      case "fund123":
+      case "tiantian":
         return "数据源1";
-      case "estimate":
+      case "fund123":
         return "数据源2";
-      case "settled":
+      case "eastmoney":
         return "数据源3";
+      case "baidu":
+        return "数据源4";
       default:
-        return "数据源2";
+        return "数据源1";
     }
   }
 
@@ -1095,10 +1097,18 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       final prefs = await SharedPreferences.getInstance();
       final saved =
           (prefs.getString(_quoteSourcePrefKey) ?? "").trim().toLowerCase();
-      final mode =
-          (saved == "estimate" || saved == "settled" || saved == "fund123")
-              ? saved
-              : "estimate";
+      String normalized = saved;
+      if (normalized == "estimate") {
+        normalized = "tiantian";
+      } else if (normalized == "settled" || normalized == "eastmoney_settled") {
+        normalized = "eastmoney";
+      }
+      final mode = (normalized == "tiantian" ||
+              normalized == "fund123" ||
+              normalized == "baidu" ||
+              normalized == "eastmoney")
+          ? normalized
+          : "tiantian";
       if (!mounted) {
         return;
       }
@@ -1152,19 +1162,24 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               ),
               const SizedBox(height: 6),
               option(
-                mode: "fund123",
+                mode: "tiantian",
                 title: "数据源1",
-                subtitle: "Fund123 估值",
+                subtitle: "天天基金网",
               ),
               option(
-                mode: "estimate",
+                mode: "fund123",
                 title: "数据源2",
-                subtitle: "fundgz 估值",
+                subtitle: "Fund123",
               ),
               option(
-                mode: "settled",
+                mode: "eastmoney",
                 title: "数据源3",
-                subtitle: "结算净值",
+                subtitle: "东财结算",
+              ),
+              option(
+                mode: "baidu",
+                title: "数据源4",
+                subtitle: "百度股市通",
               ),
               const SizedBox(height: 8),
             ],

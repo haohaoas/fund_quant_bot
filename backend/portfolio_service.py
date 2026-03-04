@@ -63,7 +63,13 @@ _ETF_SPOT_TTL_SECONDS = 120
 _ETF_SPOT_CACHE: Dict[str, Any] = {"ts": 0.0, "data": {}}
 _SETTLED_SWITCH_HOUR = int(os.getenv("SETTLED_SWITCH_HOUR", "19"))
 DEFAULT_ACCOUNT_ID = 1
-_QUOTE_SOURCE_MODES = {"auto", "estimate", "settled", "fund123"}
+_QUOTE_SOURCE_MODES = {"auto", "tiantian", "fund123", "eastmoney", "baidu"}
+_QUOTE_SOURCE_ALIASES = {
+    "estimate": "tiantian",
+    "fund123": "fund123",
+    "settled": "eastmoney",
+    "eastmoney_settled": "eastmoney",
+}
 _PORTFOLIO_ENRICH_TIMEOUT_SECONDS = 8.0
 _PORTFOLIO_ENRICH_MAX_WORKERS = int(os.getenv("PORTFOLIO_ENRICH_MAX_WORKERS", "3"))
 _FUND123_CONNECT_TIMEOUT_SECONDS = float(os.getenv("FUND123_CONNECT_TIMEOUT_SECONDS", "0.8"))
@@ -80,6 +86,11 @@ _FUND123_STATE: Dict[str, Any] = {"ts": 0.0, "csrf": "", "session": None}
 _FUND123_KEY_CACHE: Dict[str, Tuple[float, str, str]] = {}
 _FUND123_FAIL_CACHE: Dict[str, float] = {}
 _FUND123_TREND_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_BAIDU_GS_CONNECT_TIMEOUT_SECONDS = float(os.getenv("BAIDU_GS_CONNECT_TIMEOUT_SECONDS", "0.8"))
+_BAIDU_GS_READ_TIMEOUT_SECONDS = float(os.getenv("BAIDU_GS_READ_TIMEOUT_SECONDS", "1.5"))
+_BAIDU_GS_FAIL_TTL_SECONDS = float(os.getenv("BAIDU_GS_FAIL_TTL_SECONDS", "45"))
+_BAIDU_GS_FAIL_CACHE_MAX = int(os.getenv("BAIDU_GS_FAIL_CACHE_MAX", "300"))
+_BAIDU_GS_FAIL_CACHE: Dict[str, float] = {}
 _SETTLED_BG_REFRESH_LOCK = threading.Lock()
 _SETTLED_BG_REFRESH_INFLIGHT: Set[str] = set()
 _AK_RETRY_MAX_ATTEMPTS = int(os.getenv("AK_RETRY_MAX_ATTEMPTS", "2"))
@@ -129,6 +140,7 @@ def _trim_runtime_caches() -> None:
     _trim_timed_cache(_FUND123_KEY_CACHE, _FUND123_KEY_CACHE_MAX)
     _trim_ts_cache(_FUND123_FAIL_CACHE, _FUND123_FAIL_CACHE_MAX)
     _trim_timed_cache(_FUND123_TREND_CACHE, _FUND123_TREND_CACHE_MAX)
+    _trim_ts_cache(_BAIDU_GS_FAIL_CACHE, _BAIDU_GS_FAIL_CACHE_MAX)
 
 
 def clear_fund_gz_cache(code: Optional[str] = None) -> None:
@@ -139,12 +151,14 @@ def clear_fund_gz_cache(code: Optional[str] = None) -> None:
             _FUNDGZ_CACHE.pop(k, None)
         cc = _norm_code6(c)
         _FUND123_FAIL_CACHE.pop(cc, None)
+        _BAIDU_GS_FAIL_CACHE.pop(cc, None)
         trend_keys = [k for k in _FUND123_TREND_CACHE.keys() if str(k).startswith(f"{cc}|")]
         for k in trend_keys:
             _FUND123_TREND_CACHE.pop(k, None)
         return
     _FUNDGZ_CACHE.clear()
     _FUND123_FAIL_CACHE.clear()
+    _BAIDU_GS_FAIL_CACHE.clear()
     _FUND123_TREND_CACHE.clear()
 
 
@@ -162,6 +176,8 @@ def _safe_float(x: Any) -> Optional[float]:
 
 def _norm_quote_source_mode(mode: str) -> str:
     m = str(mode or "").strip().lower()
+    if m in _QUOTE_SOURCE_ALIASES:
+        return _QUOTE_SOURCE_ALIASES[m]
     if m in _QUOTE_SOURCE_MODES:
         return m
     return "auto"
@@ -249,9 +265,9 @@ def _refresh_settled_quote_async(code: str) -> None:
             out = _fallback_quote_from_settled_nav(q_code)
             if out.get("ok"):
                 ts = time.time()
-                _FUNDGZ_CACHE[f"{raw}|settled"] = (ts, out)
+                _FUNDGZ_CACHE[f"{raw}|eastmoney"] = (ts, out)
                 if c and c != raw:
-                    _FUNDGZ_CACHE[f"{c}|settled"] = (ts, out)
+                    _FUNDGZ_CACHE[f"{c}|eastmoney"] = (ts, out)
         except Exception:
             pass
         finally:
@@ -728,6 +744,314 @@ def _fetch_fund123_quote(code: str) -> Dict[str, Any]:
     return {"ok": False, "error": "fund123 fetch failed"}
 
 
+def _deep_pick_first(payload: Any, keys: Set[str], max_nodes: int = 3000) -> Any:
+    seen = 0
+    stack: List[Any] = [payload]
+    while stack and seen < max_nodes:
+        node = stack.pop()
+        seen += 1
+        if isinstance(node, dict):
+            for k, v in node.items():
+                kk = str(k or "").strip().lower()
+                if kk in keys and not isinstance(v, (dict, list)):
+                    return v
+            for v in node.values():
+                if isinstance(v, (dict, list)):
+                    stack.append(v)
+        elif isinstance(node, list):
+            for v in node:
+                if isinstance(v, (dict, list)):
+                    stack.append(v)
+    return None
+
+
+def _extract_text_field_from_blob(blob: str, keys: List[str]) -> str:
+    text = str(blob or "")
+    if not text:
+        return ""
+    for key in keys:
+        esc = re.escape(str(key))
+        m = re.search(rf'"{esc}"\s*:\s*"([^"]+)"', text, flags=re.IGNORECASE)
+        if m:
+            return str(m.group(1) or "").strip()
+        m = re.search(rf"'{esc}'\s*:\s*'([^']+)'", text, flags=re.IGNORECASE)
+        if m:
+            return str(m.group(1) or "").strip()
+    return ""
+
+
+def _extract_float_field_from_blob(blob: str, keys: List[str]) -> Optional[float]:
+    text = str(blob or "")
+    if not text:
+        return None
+    for key in keys:
+        esc = re.escape(str(key))
+        m = re.search(rf'"{esc}"\s*:\s*"?(-?\d+(?:\.\d+)?)%?"?', text, flags=re.IGNORECASE)
+        if m:
+            return _safe_float(m.group(1))
+        m = re.search(rf"'{esc}'\s*:\s*'?(-?\d+(?:\.\d+)?)%?'?", text, flags=re.IGNORECASE)
+        if m:
+            return _safe_float(m.group(1))
+    return None
+
+
+def _build_baidu_quote_from_payload(code: str, payload: Any) -> Dict[str, Any]:
+    c = _norm_code6(code)
+    nav = _safe_float(
+        _deep_pick_first(
+            payload,
+            {
+                "gsz",
+                "nav",
+                "netvalue",
+                "currentnav",
+                "latestnav",
+                "forecastnetvalue",
+                "estimate_net_value",
+                "estimatevalue",
+                "price",
+            },
+        )
+    )
+    prev_nav = _safe_float(
+        _deep_pick_first(
+            payload,
+            {
+                "dwjz",
+                "prevnav",
+                "prev_net_value",
+                "preclose",
+                "previousnav",
+                "yesterdaynav",
+                "unitnav",
+            },
+        )
+    )
+    pct_raw = _deep_pick_first(
+        payload,
+        {
+            "gszzl",
+            "pct",
+            "pctchange",
+            "changeratio",
+            "changepercent",
+            "growth",
+            "growthrate",
+            "forecastgrowth",
+            "rise",
+            "risepercent",
+        },
+    )
+    pct = _safe_float(pct_raw)
+    if pct is None and isinstance(pct_raw, str) and pct_raw.strip().endswith("%"):
+        pct = _safe_float(pct_raw.strip().rstrip("%"))
+    if pct is None and nav is not None and prev_nav not in (None, 0):
+        try:
+            pct = (float(nav) - float(prev_nav)) / float(prev_nav) * 100.0
+        except Exception:
+            pct = None
+    if prev_nav is None and nav is not None and pct not in (None, -100):
+        try:
+            prev_nav = float(nav) / (1.0 + float(pct) / 100.0)
+        except Exception:
+            prev_nav = None
+
+    if nav is None:
+        return {"ok": False, "error": "baidu payload missing nav"}
+
+    name = str(
+        _deep_pick_first(
+            payload,
+            {
+                "name",
+                "fundname",
+                "fund_name",
+                "jjmc",
+                "shortname",
+                "title",
+            },
+        )
+        or ""
+    ).strip()
+    gztime = str(
+        _deep_pick_first(
+            payload,
+            {"gztime", "updatetime", "updatetime_str", "time", "datatime", "quote_time"},
+        )
+        or ""
+    ).strip()
+    jzrq = str(
+        _deep_pick_first(payload, {"jzrq", "tradedate", "date", "navdate"}) or ""
+    ).strip()
+    if not jzrq and len(gztime) >= 10:
+        jzrq = gztime[:10].replace("/", "-")
+    if not jzrq:
+        jzrq = datetime.now().strftime("%Y-%m-%d")
+
+    return {
+        "ok": True,
+        "code": c,
+        "name": name,
+        "nav": float(nav),
+        "prev_nav": float(prev_nav) if prev_nav is not None else None,
+        "daily_change_pct": float(pct) if pct is not None else None,
+        "jzrq": jzrq,
+        "gztime": gztime,
+        "source": "baidu_gushitong",
+    }
+
+
+def _fetch_baidu_gushitong_quote(code: str) -> Dict[str, Any]:
+    c = _norm_code6(code)
+    if not c:
+        return {"ok": False, "error": "empty code"}
+
+    now = time.time()
+    last_fail = float(_BAIDU_GS_FAIL_CACHE.get(c) or 0.0)
+    if last_fail and (now - last_fail) <= _BAIDU_GS_FAIL_TTL_SECONDS:
+        return {"ok": False, "error": "baidu recent fail cached"}
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/121.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json,text/plain,*/*",
+        "Referer": f"https://gushitong.baidu.com/fund/fo-{c}",
+        "Origin": "https://gushitong.baidu.com",
+        "Connection": "close",
+    }
+    timeout_pair = (
+        _BAIDU_GS_CONNECT_TIMEOUT_SECONDS,
+        _BAIDU_GS_READ_TIMEOUT_SECONDS,
+    )
+
+    sess = _new_requests_session()
+    url_template = str(os.getenv("BAIDU_GS_QUOTE_URL_TEMPLATE") or "").strip()
+    if url_template:
+        try:
+            url = url_template.format(code=c)
+            resp = sess.get(url, headers=headers, timeout=timeout_pair, proxies={})
+            if resp.status_code == 200:
+                try:
+                    payload = resp.json()
+                    out = _build_baidu_quote_from_payload(c, payload)
+                    if out.get("ok"):
+                        return out
+                except Exception:
+                    pass
+                out = _build_baidu_quote_from_payload(c, resp.text)
+                if out.get("ok"):
+                    return out
+        except Exception:
+            pass
+
+    api_candidates = [
+        ("https://finance.pae.baidu.com/sapi/v1/fund/quote", {"code": c, "finClientType": "pc"}),
+        ("https://finance.pae.baidu.com/vapi/v1/fund/quote", {"code": c, "finClientType": "pc"}),
+        ("https://finance.pae.baidu.com/sapi/v1/fundquotation", {"code": c, "finClientType": "pc"}),
+        ("https://finance.pae.baidu.com/vapi/v1/fundquotation", {"code": c, "finClientType": "pc"}),
+    ]
+    for url, params in api_candidates:
+        try:
+            resp = sess.get(url, params=params, headers=headers, timeout=timeout_pair, proxies={})
+            if resp.status_code != 200:
+                continue
+            payload = resp.json()
+            out = _build_baidu_quote_from_payload(c, payload)
+            if out.get("ok"):
+                return out
+        except Exception:
+            continue
+
+    html_urls = [
+        f"https://gushitong.baidu.com/fund/fo-{c}",
+        f"https://gushitong.baidu.com/fund/{c}",
+    ]
+    for url in html_urls:
+        try:
+            resp = sess.get(
+                url,
+                headers={
+                    **headers,
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                },
+                timeout=timeout_pair,
+                proxies={},
+            )
+            if resp.status_code != 200:
+                continue
+            txt = str(resp.text or "")
+            if not txt:
+                continue
+            nav = _extract_float_field_from_blob(
+                txt,
+                [
+                    "gsz",
+                    "nav",
+                    "netValue",
+                    "currentNav",
+                    "latestNav",
+                    "forecastNetValue",
+                    "estimateNetValue",
+                    "price",
+                ],
+            )
+            if nav is None:
+                continue
+            prev_nav = _extract_float_field_from_blob(
+                txt,
+                ["dwjz", "prevNav", "prevNetValue", "previousNav", "preClose"],
+            )
+            pct = _extract_float_field_from_blob(
+                txt,
+                ["gszzl", "pct", "pctChange", "changeRatio", "forecastGrowth", "growthRate"],
+            )
+            if pct is None and nav is not None and prev_nav not in (None, 0):
+                try:
+                    pct = (float(nav) - float(prev_nav)) / float(prev_nav) * 100.0
+                except Exception:
+                    pct = None
+            if prev_nav is None and nav is not None and pct not in (None, -100):
+                try:
+                    prev_nav = float(nav) / (1.0 + float(pct) / 100.0)
+                except Exception:
+                    prev_nav = None
+            name = _extract_text_field_from_blob(
+                txt,
+                ["name", "fundName", "fund_name", "jjmc", "shortName", "title"],
+            )
+            gztime = _extract_text_field_from_blob(
+                txt,
+                ["gztime", "updateTime", "updateTimeStr", "quoteTime", "time"],
+            )
+            jzrq = _extract_text_field_from_blob(
+                txt,
+                ["jzrq", "tradeDate", "date", "navDate"],
+            )
+            if not jzrq and len(gztime) >= 10:
+                jzrq = gztime[:10].replace("/", "-")
+            if not jzrq:
+                jzrq = datetime.now().strftime("%Y-%m-%d")
+            return {
+                "ok": True,
+                "code": c,
+                "name": name,
+                "nav": float(nav),
+                "prev_nav": float(prev_nav) if prev_nav is not None else None,
+                "daily_change_pct": float(pct) if pct is not None else None,
+                "jzrq": jzrq,
+                "gztime": gztime,
+                "source": "baidu_gushitong",
+            }
+        except Exception:
+            continue
+
+    _BAIDU_GS_FAIL_CACHE[c] = now
+    return {"ok": False, "error": "baidu gushitong fetch failed"}
+
+
 def fetch_fund_intraday_trend(
     code: str,
     source_mode: str = "auto",
@@ -750,8 +1074,8 @@ def fetch_fund_intraday_trend(
     if cached and (now - cached[0]) <= _FUND123_TREND_TTL_SECONDS:
         return cached[1]
 
-    if mode == "settled":
-        latest = fetch_fund_gz(c, source_mode="settled")
+    if mode in {"eastmoney", "tiantian", "baidu"}:
+        latest = fetch_fund_gz(c, source_mode=mode)
         nav = _safe_float((latest or {}).get("nav"))
         pct = _safe_float((latest or {}).get("daily_change_pct"))
         if nav is not None:
@@ -768,7 +1092,7 @@ def fetch_fund_intraday_trend(
                 "ok": True,
                 "code": c,
                 "name": str((latest or {}).get("name") or "").strip(),
-                "source": str((latest or {}).get("source") or "settled"),
+                "source": str((latest or {}).get("source") or mode),
                 "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "points": points,
             }
@@ -776,10 +1100,10 @@ def fetch_fund_intraday_trend(
             return out
         out = {
             "ok": False,
-            "error": str((latest or {}).get("error") or "settled quote unavailable"),
+            "error": str((latest or {}).get("error") or f"{mode} quote unavailable"),
             "code": c,
             "name": str((latest or {}).get("name") or "").strip(),
-            "source": "settled",
+            "source": mode,
             "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "points": [],
         }
@@ -1404,66 +1728,39 @@ def fetch_fund_gz(code: str, source_mode: str = "auto") -> Dict[str, Any]:
     now_dt = datetime.now()
     cache_key = f"{c}|{mode}"
     cached = _FUNDGZ_CACHE.get(cache_key)
-    cache_ttl = _FUNDGZ_SETTLED_TTL_SECONDS if mode == "settled" else _FUNDGZ_TTL_SECONDS
-    settled_prefers_estimate_intraday = (
-        mode == "settled"
-        and now_dt.weekday() < 5
-        and now_dt.hour < _SETTLED_SWITCH_HOUR
-    )
-
-    # For settled mode in workday daytime, prefer intraday estimate instead of
-    # previous-day settled snapshot.
-    if not settled_prefers_estimate_intraday and cached and (now - cached[0]) <= cache_ttl:
+    cache_ttl = _FUNDGZ_SETTLED_TTL_SECONDS if mode == "eastmoney" else _FUNDGZ_TTL_SECONDS
+    if cached and (now - cached[0]) <= cache_ttl:
         return cached[1]
 
-    if settled_prefers_estimate_intraday:
-        estimate_cached = _FUNDGZ_CACHE.get(f"{c}|estimate")
-        if (
-            estimate_cached
-            and isinstance(estimate_cached[1], dict)
-            and estimate_cached[1].get("ok")
-            and (now - estimate_cached[0]) <= _FUNDGZ_TTL_SECONDS
-        ):
-            quick = dict(estimate_cached[1])
-            src = str(quick.get("source") or "fundgz").strip()
-            quick["source"] = f"{src}_via_settled"
-            return quick
-        quick_est = _quick_estimate_quote_from_fundgz(c)
-        if quick_est.get("ok"):
-            _FUNDGZ_CACHE[f"{c}|estimate"] = (now, quick_est)
-            quick = dict(quick_est)
-            src = str(quick.get("source") or "fundgz").strip()
-            quick["source"] = f"{src}_via_settled"
-            return quick
-        # If estimate source failed, continue to settled fallback chain below.
-
-    if mode == "settled":
+    if mode == "eastmoney":
         if cached and isinstance(cached[1], dict) and cached[1].get("ok"):
             # stale-while-revalidate: return last good settled quote immediately
             # and refresh in background to avoid blocking holdings refresh.
             _refresh_settled_quote_async(c)
             return cached[1]
+        warm = _fallback_quote_from_settled_nav(c)
+        if warm.get("ok"):
+            _FUNDGZ_CACHE[cache_key] = (now, warm)
+            return warm
         # No settled cache yet: trigger async warmup and return quickly.
         _refresh_settled_quote_async(c)
-        estimate_cached = _FUNDGZ_CACHE.get(f"{c}|estimate")
-        if estimate_cached and isinstance(estimate_cached[1], dict) and estimate_cached[1].get("ok"):
-            quick = dict(estimate_cached[1])
-            src = str(quick.get("source") or "fundgz").strip()
-            quick["source"] = f"{src}_warmup"
-            return quick
-        quick_est = _quick_estimate_quote_from_fundgz(c)
-        if quick_est.get("ok"):
-            _FUNDGZ_CACHE[f"{c}|estimate"] = (now, quick_est)
-            src = str(quick_est.get("source") or "fundgz").strip()
-            quick = dict(quick_est)
-            quick["source"] = f"{src}_warmup"
-            return quick
-        return {"ok": False, "error": "settled quote warming up"}
+        return {"ok": False, "error": "eastmoney settled quote warming up"}
     elif mode == "fund123":
         f123 = _fetch_fund123_quote(c)
         if f123.get("ok"):
             _FUNDGZ_CACHE[cache_key] = (now, f123)
             return f123
+        out = {"ok": False, "error": str(f123.get("error") or "fund123 quote unavailable")}
+        _FUNDGZ_CACHE[cache_key] = (now, out)
+        return out
+    elif mode == "baidu":
+        bq = _fetch_baidu_gushitong_quote(c)
+        if bq.get("ok"):
+            _FUNDGZ_CACHE[cache_key] = (now, bq)
+            return bq
+        out = {"ok": False, "error": str(bq.get("error") or "baidu quote unavailable")}
+        _FUNDGZ_CACHE[cache_key] = (now, out)
+        return out
 
     headers = {
         "User-Agent": (
@@ -1496,12 +1793,12 @@ def fetch_fund_gz(code: str, source_mode: str = "auto") -> Dict[str, Any]:
             proxies={},
         )
         if resp.status_code != 200:
-            if mode in {"auto", "fund123"}:
+            if mode in {"auto"}:
                 f123 = _fetch_fund123_quote(c)
                 if f123.get("ok"):
                     _FUNDGZ_CACHE[cache_key] = (now, f123)
                     return f123
-            if mode != "estimate":
+            if mode != "tiantian":
                 fb = _fallback_quote_from_settled_nav(c)
                 if fb.get("ok"):
                     _FUNDGZ_CACHE[cache_key] = (now, fb)
@@ -1513,12 +1810,12 @@ def fetch_fund_gz(code: str, source_mode: str = "auto") -> Dict[str, Any]:
         resp.encoding = "utf-8"
         obj = _parse_jsonp_obj(resp.text)
         if not obj:
-            if mode in {"auto", "fund123"}:
+            if mode in {"auto"}:
                 f123 = _fetch_fund123_quote(c)
                 if f123.get("ok"):
                     _FUNDGZ_CACHE[cache_key] = (now, f123)
                     return f123
-            if mode != "estimate":
+            if mode != "tiantian":
                 fb = _fallback_quote_from_settled_nav(c)
                 if fb.get("ok"):
                     _FUNDGZ_CACHE[cache_key] = (now, fb)
@@ -1556,8 +1853,10 @@ def fetch_fund_gz(code: str, source_mode: str = "auto") -> Dict[str, Any]:
         try:
             now_dt = datetime.now()
             should_try_settled = False
-            if mode == "estimate":
-                should_try_settled = _is_nav_settled(out)
+            if mode == "tiantian":
+                should_try_settled = False
+            elif mode == "eastmoney":
+                should_try_settled = True
             else:
                 should_try_settled = (
                     now_dt.weekday() >= 5
@@ -1592,12 +1891,12 @@ def fetch_fund_gz(code: str, source_mode: str = "auto") -> Dict[str, Any]:
         return out
 
     except Exception as e:
-        if mode in {"auto", "fund123"}:
+        if mode in {"auto"}:
             f123 = _fetch_fund123_quote(c)
             if f123.get("ok"):
                 _FUNDGZ_CACHE[cache_key] = (now, f123)
                 return f123
-        if mode != "estimate":
+        if mode != "tiantian":
             fb = _fallback_quote_from_settled_nav(c)
             if fb.get("ok"):
                 _FUNDGZ_CACHE[cache_key] = (now, fb)
@@ -1690,7 +1989,7 @@ def enrich_position(pos: Dict[str, Any], quote_source: str = "auto") -> Dict[str
     cost = _safe_float(pos.get("cost")) or 0.0
     source_mode = _norm_quote_source_mode(quote_source)
     # Fast quote modes should avoid heavy settled/sector backfill on each refresh.
-    fast_mode = source_mode in {"estimate", "fund123", "settled"}
+    fast_mode = source_mode in {"tiantian", "fund123", "baidu", "eastmoney"}
 
     gz = fetch_fund_gz(code, source_mode=source_mode) if code else {"ok": False}
     name = str(gz.get("name") or "").strip() if gz.get("ok") else ""
