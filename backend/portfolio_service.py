@@ -169,7 +169,19 @@ def _safe_float(x: Any) -> Optional[float]:
         s = str(x).strip()
         if s in ("", "--", "-", "None", "nan", "NaN"):
             return None
-        return float(s)
+        try:
+            return float(s)
+        except Exception:
+            pass
+
+        # Handle strings with units/text, e.g. "1.234元", "+0.56%", "估值 1.2345"
+        ss = s.replace(",", "")
+        if re.match(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}", ss):
+            return None
+        m = re.search(r"[-+]?\d+(?:\.\d+)?", ss)
+        if not m:
+            return None
+        return float(m.group(0))
     except Exception:
         return None
 
