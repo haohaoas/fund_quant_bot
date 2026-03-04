@@ -91,6 +91,9 @@ _BAIDU_GS_READ_TIMEOUT_SECONDS = float(os.getenv("BAIDU_GS_READ_TIMEOUT_SECONDS"
 _BAIDU_GS_FAIL_TTL_SECONDS = float(os.getenv("BAIDU_GS_FAIL_TTL_SECONDS", "45"))
 _BAIDU_GS_FAIL_CACHE_MAX = int(os.getenv("BAIDU_GS_FAIL_CACHE_MAX", "300"))
 _BAIDU_GS_FAIL_CACHE: Dict[str, float] = {}
+_BAIDU_GS_COOKIE_TTL_SECONDS = float(os.getenv("BAIDU_GS_COOKIE_TTL_SECONDS", "1800"))
+_BAIDU_GS_COOKIE_LOCK = threading.Lock()
+_BAIDU_GS_COOKIE_STATE: Dict[str, Any] = {"ts": 0.0, "cookie": ""}
 _SETTLED_BG_REFRESH_LOCK = threading.Lock()
 _SETTLED_BG_REFRESH_INFLIGHT: Set[str] = set()
 _AK_RETRY_MAX_ATTEMPTS = int(os.getenv("AK_RETRY_MAX_ATTEMPTS", "2"))
@@ -956,6 +959,72 @@ def _extract_baidu_market_data_quote(code: str, payload: Any) -> Optional[Dict[s
     return None
 
 
+def _build_cookie_header_from_requests_jar(cookies_obj: Any) -> str:
+    try:
+        items = requests.utils.dict_from_cookiejar(cookies_obj)
+    except Exception:
+        items = {}
+    if not isinstance(items, dict) or not items:
+        return ""
+    parts: List[str] = []
+    for k, v in items.items():
+        kk = str(k or "").strip()
+        vv = str(v or "").strip()
+        if not kk or not vv:
+            continue
+        parts.append(f"{kk}={vv}")
+    return "; ".join(parts)
+
+
+def _get_baidu_gs_cookie(sess: requests.Session, headers: Dict[str, str]) -> str:
+    now = time.time()
+    with _BAIDU_GS_COOKIE_LOCK:
+        cached_cookie = str(_BAIDU_GS_COOKIE_STATE.get("cookie") or "").strip()
+        cached_ts = float(_BAIDU_GS_COOKIE_STATE.get("ts") or 0.0)
+        if cached_cookie and (now - cached_ts) <= _BAIDU_GS_COOKIE_TTL_SECONDS:
+            return cached_cookie
+
+    cookie_text = ""
+    try:
+        r1 = sess.get(
+            "https://gushitong.baidu.com/calendar",
+            headers={
+                **headers,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
+            timeout=(max(0.5, _BAIDU_GS_CONNECT_TIMEOUT_SECONDS), max(1.0, _BAIDU_GS_READ_TIMEOUT_SECONDS + 0.8)),
+            proxies={},
+        )
+        html = str(r1.text or "")
+        hm_url = ""
+        m = re.search(r"https://hm\.baidu\.com/hm\.js\?\w+", html)
+        if m:
+            hm_url = str(m.group(0) or "").strip()
+        if not hm_url:
+            m = re.search(r"//hm\.baidu\.com/hm\.js\?\w+", html)
+            if m:
+                hm_url = "https:" + str(m.group(0) or "").strip()
+        if hm_url:
+            try:
+                sess.get(
+                    hm_url,
+                    headers=headers,
+                    timeout=(max(0.5, _BAIDU_GS_CONNECT_TIMEOUT_SECONDS), max(1.0, _BAIDU_GS_READ_TIMEOUT_SECONDS + 0.8)),
+                    proxies={},
+                )
+            except Exception:
+                pass
+        cookie_text = _build_cookie_header_from_requests_jar(getattr(sess, "cookies", None))
+    except Exception:
+        cookie_text = ""
+
+    if cookie_text:
+        with _BAIDU_GS_COOKIE_LOCK:
+            _BAIDU_GS_COOKIE_STATE["cookie"] = cookie_text
+            _BAIDU_GS_COOKIE_STATE["ts"] = now
+    return cookie_text
+
+
 def _build_baidu_quote_from_payload(code: str, payload: Any) -> Dict[str, Any]:
     c = _norm_code6(code)
     name = ""
@@ -1364,9 +1433,12 @@ def _fetch_baidu_gushitong_quote(code: str) -> Dict[str, Any]:
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/121.0.0.0 Safari/537.36"
         ),
-        "Accept": "application/json,text/plain,*/*",
+        "Accept": "application/vnd.finance-web.v1+json,application/json,text/plain,*/*",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         "Referer": f"https://gushitong.baidu.com/fund/fo-{c}",
         "Origin": "https://gushitong.baidu.com",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
         "Connection": "close",
     }
     timeout_pair = (
@@ -1375,6 +1447,13 @@ def _fetch_baidu_gushitong_quote(code: str) -> Dict[str, Any]:
     )
 
     sess = _new_requests_session()
+    cookie_header = _get_baidu_gs_cookie(sess, headers)
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+        diag.append("cookie:ok")
+    else:
+        diag.append("cookie:empty")
+
     url_template = str(os.getenv("BAIDU_GS_QUOTE_URL_TEMPLATE") or "").strip()
     if url_template:
         try:
